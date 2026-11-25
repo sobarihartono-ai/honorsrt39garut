@@ -63,6 +63,7 @@ import {
   auth,
   authPersistenceReady,
   db,
+  firebaseProjectId,
   googleProvider,
   handleFirestoreError,
   testConnection,
@@ -338,7 +339,10 @@ function formatFirebaseAuthError(err: unknown): string {
     return 'Jendela login Google ditutup sebelum selesai. Klik Sinkron Cloud untuk mencoba lagi.';
   }
   if (code === 'auth/unauthorized-domain') {
-    return 'Domain URL ini belum terdaftar untuk login Google pada proyek Firebase.';
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    return host
+      ? `Domain "${host}" belum terdaftar di daftar Authorized domains Firebase Authentication.`
+      : 'Domain URL ini belum terdaftar untuk login Google pada proyek Firebase.';
   }
   if (code === 'auth/network-request-failed') {
     return 'Koneksi internet bermasalah saat mencoba login Google. Periksa jaringan komputer ini.';
@@ -377,6 +381,7 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [syncState, setSyncState] = useState<'local' | 'syncing' | 'synced' | 'offline'>('local');
   const [syncErrorMsg, setSyncErrorMsg] = useState<string>('');
+  const [unauthorizedHost, setUnauthorizedHost] = useState<string>('');
   const [idbReady, setIdbReady] = useState(false);
   const [idbWritable, setIdbWritable] = useState<boolean | null>(null);
 
@@ -1159,15 +1164,29 @@ export default function App() {
 
   const handleGoogleSignIn = async (): Promise<void> => {
     setSyncErrorMsg('');
+    setUnauthorizedHost('');
     try {
       await authPersistenceReady;
       await signInWithPopup(auth, googleProvider);
       showToast('Berhasil masuk dengan Google. Data disinkronkan ke Cloud.');
     } catch (err) {
       console.error('Login Google gagal:', err);
+      if (err instanceof FirebaseError && err.code === 'auth/unauthorized-domain' && typeof window !== 'undefined') {
+        setUnauthorizedHost(window.location.hostname);
+      }
       const msg = formatFirebaseAuthError(err);
       setSyncErrorMsg(msg);
       showToast(msg);
+    }
+  };
+
+  const handleCopyUnauthorizedHost = async (): Promise<void> => {
+    if (!unauthorizedHost) return;
+    try {
+      await navigator.clipboard.writeText(unauthorizedHost);
+      showToast(`Domain "${unauthorizedHost}" disalin. Tempel di Authorized domains Firebase.`);
+    } catch {
+      showToast(`Salin domain ini: ${unauthorizedHost}`);
     }
   };
 
@@ -1176,6 +1195,7 @@ export default function App() {
       await signOut(auth);
       setSyncState('local');
       setSyncErrorMsg('');
+      setUnauthorizedHost('');
       showToast('Keluar dari akun Cloud. Mode simpan perangkat aktif.');
     } catch (err) {
       console.error('Logout gagal:', err);
@@ -2178,7 +2198,28 @@ export default function App() {
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
-              {typeof window !== 'undefined' && (
+              {unauthorizedHost && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyUnauthorizedHost()}
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 font-semibold whitespace-nowrap flex items-center gap-1.5 transition"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Salin Domain
+                  </button>
+                  <a
+                    href={`https://console.firebase.google.com/project/${firebaseProjectId}/authentication/settings`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[36px] px-3 py-1.5 rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 font-semibold whitespace-nowrap flex items-center gap-1.5 transition"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Atur Domain Firebase
+                  </a>
+                </>
+              )}
+              {typeof window !== 'undefined' && !unauthorizedHost && (
                 <a
                   href={window.location.href}
                   target="_blank"
@@ -2195,7 +2236,7 @@ export default function App() {
                   onClick={handleGoogleSignIn}
                   className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap"
                 >
-                  Aktifkan Sinkron Cloud
+                  {unauthorizedHost ? 'Coba Login Lagi' : 'Aktifkan Sinkron Cloud'}
                 </button>
               ) : (
                 <button
