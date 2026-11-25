@@ -2,7 +2,7 @@
 
 ## 1. Data Invariants
 1. Every document under `/users/{userId}/...` belongs strictly to `{userId}` and requires `request.auth != null && request.auth.uid == userId && request.auth.token.email_verified == true`.
-2. Every subcollection document (`transactions`, `employees`, `settings`) requires the parent `/users/{userId}` document to exist and have matching `ownerId == request.auth.uid`.
+2. Every subcollection document (`transactions`, `employees`, `settings`, `history`) requires the parent `/users/{userId}` document to exist and have matching `ownerId == request.auth.uid`.
 3. All document IDs (`userId`, `txId`, `empId`, `settingId`) must satisfy `^[a-zA-Z0-9_\-]+$` and length `<= 128`.
 4. All strings have explicit `.size()` upper bounds, all numbers have explicit bounds, and `createdAt` / `ownerId` / `uid` are immutable after creation.
 5. `createdAt` on create and `updatedAt` on create/update must equal `request.time`.

@@ -19,6 +19,7 @@ export interface PendingCloudMutations {
   deletedTxIds: string[];
   dirtyEmpIds: string[];
   deletedEmpIds: string[];
+  dirtyHistoryIds: string[];
   dirtySettings: boolean;
 }
 
@@ -27,6 +28,7 @@ export const EMPTY_PENDING_MUTATIONS: PendingCloudMutations = {
   deletedTxIds: [],
   dirtyEmpIds: [],
   deletedEmpIds: [],
+  dirtyHistoryIds: [],
   dirtySettings: false,
 };
 
@@ -55,6 +57,7 @@ function normalizePendingMutations(raw: unknown): PendingCloudMutations {
     deletedTxIds: strArr(obj.deletedTxIds),
     dirtyEmpIds: strArr(obj.dirtyEmpIds),
     deletedEmpIds: strArr(obj.deletedEmpIds),
+    dirtyHistoryIds: strArr(obj.dirtyHistoryIds),
     dirtySettings: Boolean(obj.dirtySettings),
   };
 }
@@ -65,6 +68,7 @@ export function hasAnyPendingMutation(m: PendingCloudMutations): boolean {
     m.deletedTxIds.length > 0 ||
     m.dirtyEmpIds.length > 0 ||
     m.deletedEmpIds.length > 0 ||
+    m.dirtyHistoryIds.length > 0 ||
     m.dirtySettings
   );
 }

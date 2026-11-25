@@ -61,6 +61,7 @@ interface TransactionFormProps {
   editingTx: Transaction | null;
   onCancelEdit: () => void;
   onSubmitTx: (tx: Transaction, isEdit: boolean) => void;
+  onValidationError?: (msg: string) => void;
 }
 
 export const TransactionForm: React.FC<TransactionFormProps> = ({
@@ -72,6 +73,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
   editingTx,
   onCancelEdit,
   onSubmitTx,
+  onValidationError,
 }) => {
   const activeMonthDefault = currentMonth === 'ALL' ? 'November' : currentMonth;
 
@@ -171,15 +173,17 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
         setBulan(m);
         setNoBukti(suggestNoBukti(m, currentCategory));
         setTanggal(`25 ${m} 2026`);
-        setNama('');
-        setJenjang(currentCategory === 'lainnya' ? 'SRT 39 GARUT' : 'SRMP');
-        setJenis('');
-        setStatus(currentCategory === 'gurutamu' ? 'ASN' : 'NON ASN');
-        setJabatan(defaultJabatan);
-        setTarif(defaultTarif);
-        setJamlat(1);
-        setPajakRate(defaultPajak);
-        setCustomRangka(customActivityTitle);
+        if (catChanged || editingChanged) {
+          setNama('');
+          setJenis('');
+          setJenjang(currentCategory === 'lainnya' ? 'SRT 39 GARUT' : 'SRMP');
+          setStatus(currentCategory === 'gurutamu' ? 'ASN' : 'NON ASN');
+          setJabatan(defaultJabatan);
+          setTarif(defaultTarif);
+          setJamlat(1);
+          setPajakRate(defaultPajak);
+          setCustomRangka(customActivityTitle);
+        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -258,7 +262,10 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
 
   const handleSubmit = (e: React.FormEvent): void => {
     e.preventDefault();
-    if (!nama.trim() || !jenis.trim() || !noBukti.trim() || !tanggal.trim()) return;
+    if (!nama.trim() || !jenis.trim() || !noBukti.trim() || !tanggal.trim()) {
+      onValidationError?.('Lengkapi Nama, Bidang/Mapel, No. Bukti Kas, dan Tanggal sebelum menyimpan.');
+      return;
+    }
 
     const tx: Transaction = {
       id: editingTx

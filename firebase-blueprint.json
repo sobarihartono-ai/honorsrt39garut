@@ -225,6 +225,26 @@
         "currentCategory",
         "updatedAt"
       ]
+    },
+    "HistoryEntry": {
+      "title": "HistoryEntry",
+      "description": "Catatan riwayat perubahan data SPJ dan master pegawai milik pengguna",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "action": { "type": "string", "maxLength": 80 },
+        "detail": { "type": "string", "maxLength": 300 },
+        "timestamp": { "type": "number" },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "action", "detail", "timestamp", "createdAt"]
     }
   },
   "firestore": {
@@ -243,6 +263,10 @@
     "/users/{userId}/settings/{settingId}": {
       "schema": { "$ref": "#/entities/AppSettings" },
       "description": "Konfigurasi pejabat penandatangan dan judul khusus milik pengguna"
+    },
+    "/users/{userId}/history/{histId}": {
+      "schema": { "$ref": "#/entities/HistoryEntry" },
+      "description": "Riwayat aktivitas perubahan data SPJ milik pengguna"
     }
   }
 }

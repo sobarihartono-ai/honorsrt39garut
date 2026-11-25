@@ -9,7 +9,9 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocFromServer,
   getDocs,
+  getDocsFromServer,
   onSnapshot,
   query,
   serverTimestamp,
@@ -24,6 +26,7 @@ import {
   Cloud,
   CloudOff,
   Copy,
+  ExternalLink,
   FileCheck2,
   FileSpreadsheet,
   FileText,
@@ -172,6 +175,97 @@ function buildSettingsPayload(state: AppState, uid: string, isCreate: boolean) {
   return base;
 }
 
+function buildHistoryPayload(entry: HistoryEntry, uid: string) {
+  return {
+    ownerId: uid,
+    action: clampStr(entry.action || 'Aktivitas', 80) || 'Aktivitas',
+    detail: clampStr(entry.detail ?? '', 300),
+    timestamp: safeFiniteNumber(entry.timestamp, Date.now(), 0, Number.MAX_SAFE_INTEGER),
+    createdAt: serverTimestamp(),
+  };
+}
+
+function mergeRemoteTransactions(
+  remoteTx: Transaction[],
+  prevTx: Transaction[],
+  pending: PendingCloudMutations
+): Transaction[] {
+  const dirtySet = new Set(pending.dirtyTxIds.map(sanitizeFirestoreId));
+  const deletedSet = new Set(pending.deletedTxIds.map(sanitizeFirestoreId));
+  if (dirtySet.size === 0 && deletedSet.size === 0) {
+    return remoteTx;
+  }
+  const prevMap = new Map(prevTx.map((t) => [sanitizeFirestoreId(t.id), t]));
+  const merged = new Map<string, Transaction>();
+  remoteTx.forEach((tx) => {
+    const sid = sanitizeFirestoreId(tx.id);
+    if (deletedSet.has(sid)) return;
+    if (dirtySet.has(sid) && prevMap.has(sid)) {
+      merged.set(sid, prevMap.get(sid)!);
+    } else {
+      merged.set(sid, tx);
+    }
+  });
+  prevTx.forEach((tx) => {
+    const sid = sanitizeFirestoreId(tx.id);
+    if (dirtySet.has(sid) && !deletedSet.has(sid) && !merged.has(sid)) {
+      merged.set(sid, tx);
+    }
+  });
+  return Array.from(merged.values());
+}
+
+function mergeRemoteEmployees(
+  remoteEmp: MasterEmployee[],
+  prevEmp: MasterEmployee[],
+  pending: PendingCloudMutations
+): MasterEmployee[] {
+  const dirtySet = new Set(pending.dirtyEmpIds.map(sanitizeFirestoreId));
+  const deletedSet = new Set(pending.deletedEmpIds.map(sanitizeFirestoreId));
+  if (dirtySet.size === 0 && deletedSet.size === 0) {
+    return remoteEmp;
+  }
+  const prevMap = new Map(prevEmp.map((e) => [sanitizeFirestoreId(e.id), e]));
+  const merged = new Map<string, MasterEmployee>();
+  remoteEmp.forEach((emp) => {
+    const sid = sanitizeFirestoreId(emp.id);
+    if (deletedSet.has(sid)) return;
+    if (dirtySet.has(sid) && prevMap.has(sid)) {
+      merged.set(sid, prevMap.get(sid)!);
+    } else {
+      merged.set(sid, emp);
+    }
+  });
+  prevEmp.forEach((emp) => {
+    const sid = sanitizeFirestoreId(emp.id);
+    if (dirtySet.has(sid) && !deletedSet.has(sid) && !merged.has(sid)) {
+      merged.set(sid, emp);
+    }
+  });
+  return Array.from(merged.values());
+}
+
+function mergeHistoryLists(
+  remoteHist: HistoryEntry[],
+  prevHist: HistoryEntry[],
+  dirtyHistIds: string[]
+): HistoryEntry[] {
+  const dirtySet = new Set(dirtyHistIds.map(sanitizeFirestoreId));
+  const merged = new Map<string, HistoryEntry>();
+  remoteHist.forEach((h) => {
+    merged.set(sanitizeFirestoreId(h.id), h);
+  });
+  prevHist.forEach((h) => {
+    const sid = sanitizeFirestoreId(h.id);
+    if (dirtySet.has(sid) && !merged.has(sid)) {
+      merged.set(sid, h);
+    }
+  });
+  return Array.from(merged.values())
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, 50);
+}
+
 function logAndCaptureFirestoreError(error: unknown, op: OperationType, path: string | null): void {
   try {
     handleFirestoreError(error, op, path);
@@ -224,7 +318,7 @@ async function upsertDocSafe(
     } catch (err) {
       const code = err instanceof FirebaseError ? err.code : '';
       if (code === 'permission-denied') {
-        const snap = await getDoc(ref);
+        const snap = await getDocFromServer(ref).catch(() => getDoc(ref));
         if (snap.exists()) {
           await updateDoc(ref, updateData);
           return;
@@ -290,7 +384,10 @@ export default function App() {
   const ensuredUidRef = useRef<string | null>(null);
   const cloudTxIdsRef = useRef<Set<string>>(new Set());
   const cloudEmpIdsRef = useRef<Set<string>>(new Set());
+  const cloudHistoryIdsRef = useRef<Set<string>>(new Set());
   const cloudConfigExistsRef = useRef<boolean>(false);
+  const hasUserChangedFilterRef = useRef<boolean>(false);
+  const appliedInitialCloudSettingsRef = useRef<boolean>(false);
 
   const [confirmState, setConfirmState] = useState<{
     open: boolean;
@@ -394,17 +491,20 @@ export default function App() {
     };
   }, []);
 
-  const appendHistory = useCallback((action: string, detail: string): HistoryEntry[] => {
-    const entry: HistoryEntry = {
-      id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      timestamp: Date.now(),
-      action,
-      detail,
-    };
-    const next = [entry, ...envelopeRef.current.historyLog].slice(0, 50);
-    setHistoryLog(next);
-    return next;
-  }, []);
+  const appendHistory = useCallback(
+    (action: string, detail: string): { nextHistory: HistoryEntry[]; newEntry: HistoryEntry } => {
+      const newEntry: HistoryEntry = {
+        id: sanitizeFirestoreId(`hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`),
+        timestamp: Date.now(),
+        action,
+        detail,
+      };
+      const nextHistory = [newEntry, ...envelopeRef.current.historyLog].slice(0, 50);
+      setHistoryLog(nextHistory);
+      return { nextHistory, newEntry };
+    },
+    []
+  );
 
   // Verify Firestore connection on startup
   useEffect(() => {
@@ -429,7 +529,7 @@ export default function App() {
       updatedAt: serverTimestamp(),
     };
     try {
-      const snap = await getDoc(userRef);
+      const snap = await getDocFromServer(userRef).catch(() => getDoc(userRef));
       if (!snap.exists()) {
         await upsertDocSafe(userRef, createPayload, updatePayload, false);
       } else {
@@ -447,14 +547,17 @@ export default function App() {
     (
       uid: string,
       state: AppState,
+      historyLogList: HistoryEntry[],
       pending: PendingCloudMutations,
       existingTxIds: Set<string>,
       existingEmpIds: Set<string>,
+      existingHistoryIds: Set<string>,
       configExists: boolean
     ): BatchOp[] => {
       const ops: BatchOp[] = [];
       const txMap = new Map(state.transactions.map((t) => [sanitizeFirestoreId(t.id), t]));
       const empMap = new Map(state.masterEmployees.map((e) => [sanitizeFirestoreId(e.id), e]));
+      const histMap = new Map(historyLogList.map((h) => [sanitizeFirestoreId(h.id), h]));
 
       const dirtyTxSet = new Set(pending.dirtyTxIds.map(sanitizeFirestoreId));
       const deletedTxSet = new Set(pending.deletedTxIds.map(sanitizeFirestoreId));
@@ -496,6 +599,19 @@ export default function App() {
         existingEmpIds.delete(sid);
       });
 
+      const dirtyHistSet = new Set(pending.dirtyHistoryIds.map(sanitizeFirestoreId));
+      dirtyHistSet.forEach((sid) => {
+        if (existingHistoryIds.has(sid)) return;
+        const entry = histMap.get(sid);
+        if (!entry) return;
+        ops.push({
+          kind: 'set',
+          ref: doc(db, 'users', uid, 'history', sid),
+          data: buildHistoryPayload(entry, uid),
+        });
+        existingHistoryIds.add(sid);
+      });
+
       if (pending.dirtySettings) {
         const cfgRef = doc(db, 'users', uid, 'settings', 'config');
         if (configExists) {
@@ -532,25 +648,34 @@ export default function App() {
         }
         const txCol = collection(db, 'users', u.uid, 'transactions');
         const empCol = collection(db, 'users', u.uid, 'employees');
+        const histCol = collection(db, 'users', u.uid, 'history');
         const cfgRef = doc(db, 'users', u.uid, 'settings', 'config');
-        const [txSnap, empSnap, cfgSnap] = await Promise.all([
-          getDocs(query(txCol, where('ownerId', '==', u.uid))),
-          getDocs(query(empCol, where('ownerId', '==', u.uid))),
-          getDoc(cfgRef),
+        const txQuery = query(txCol, where('ownerId', '==', u.uid));
+        const empQuery = query(empCol, where('ownerId', '==', u.uid));
+        const histQuery = query(histCol, where('ownerId', '==', u.uid));
+        const [txSnap, empSnap, histSnap, cfgSnap] = await Promise.all([
+          getDocsFromServer(txQuery).catch(() => getDocs(txQuery)),
+          getDocsFromServer(empQuery).catch(() => getDocs(empQuery)),
+          getDocsFromServer(histQuery).catch(() => getDocs(histQuery)),
+          getDocFromServer(cfgRef).catch(() => getDoc(cfgRef)),
         ]);
 
         const existingTxIds = new Set(txSnap.docs.map((d) => d.id));
         const existingEmpIds = new Set(empSnap.docs.map((d) => d.id));
+        const existingHistoryIds = new Set(histSnap.docs.map((d) => d.id));
         cloudTxIdsRef.current = existingTxIds;
         cloudEmpIdsRef.current = existingEmpIds;
+        cloudHistoryIdsRef.current = existingHistoryIds;
         cloudConfigExistsRef.current = cfgSnap.exists();
 
         const ops = buildOpsForPendingMutations(
           u.uid,
           currentEnv.state,
+          currentEnv.historyLog,
           currentEnv.pendingMutations,
           existingTxIds,
           existingEmpIds,
+          existingHistoryIds,
           cfgSnap.exists()
         );
         if (ops.length > 0) {
@@ -594,7 +719,7 @@ export default function App() {
   }, [user, flushPendingMutations]);
 
   const syncSettingsToCloud = useCallback(
-    async (nextState: AppState, markDirtyOnFail = true) => {
+    async (nextState: AppState, markDirtyOnFail = true, newHistoryEntry?: HistoryEntry) => {
       if (!user || !user.emailVerified) return;
       setSyncState('syncing');
       try {
@@ -610,9 +735,24 @@ export default function App() {
           cloudConfigExistsRef.current
         );
         cloudConfigExistsRef.current = true;
+        if (newHistoryEntry) {
+          const histSid = sanitizeFirestoreId(newHistoryEntry.id);
+          if (!cloudHistoryIdsRef.current.has(histSid)) {
+            await setDoc(
+              doc(db, 'users', user.uid, 'history', histSid),
+              buildHistoryPayload(newHistoryEntry, user.uid)
+            );
+            cloudHistoryIdsRef.current.add(histSid);
+          }
+        }
         const nextPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
           dirtySettings: false,
+          dirtyHistoryIds: newHistoryEntry
+            ? envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+                (id) => id !== newHistoryEntry.id
+              )
+            : envelopeRef.current.pendingMutations.dirtyHistoryIds,
         };
         const stillPending = hasAnyPendingMutation(nextPending);
         setPendingMutations(nextPending);
@@ -620,7 +760,7 @@ export default function App() {
         setSyncErrorMsg('');
         setSyncState('synced');
         persistEnvelope(
-          nextState,
+          envelopeRef.current.state,
           envelopeRef.current.activeTab,
           envelopeRef.current.historyLog,
           stillPending,
@@ -631,11 +771,16 @@ export default function App() {
           const nextPending: PendingCloudMutations = {
             ...envelopeRef.current.pendingMutations,
             dirtySettings: true,
+            dirtyHistoryIds: newHistoryEntry
+              ? Array.from(
+                  new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newHistoryEntry.id])
+                )
+              : envelopeRef.current.pendingMutations.dirtyHistoryIds,
           };
           setPendingMutations(nextPending);
           setHasUnsyncedLocal(true);
           persistEnvelope(
-            nextState,
+            envelopeRef.current.state,
             envelopeRef.current.activeTab,
             envelopeRef.current.historyLog,
             true,
@@ -654,6 +799,7 @@ export default function App() {
   useEffect(() => {
     let unsubTx: (() => void) | null = null;
     let unsubEmp: (() => void) | null = null;
+    let unsubHistory: (() => void) | null = null;
     let unsubSettings: (() => void) | null = null;
     let unsubAuth: (() => void) | null = null;
     let mounted = true;
@@ -663,14 +809,18 @@ export default function App() {
       unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
         if (unsubTx) unsubTx();
         if (unsubEmp) unsubEmp();
+        if (unsubHistory) unsubHistory();
         if (unsubSettings) unsubSettings();
         unsubTx = null;
         unsubEmp = null;
+        unsubHistory = null;
         unsubSettings = null;
         ensuredUidRef.current = null;
         cloudTxIdsRef.current.clear();
         cloudEmpIdsRef.current.clear();
+        cloudHistoryIdsRef.current.clear();
         cloudConfigExistsRef.current = false;
+        appliedInitialCloudSettingsRef.current = false;
 
         setUser(currentUser);
         setAuthReady(true);
@@ -691,8 +841,10 @@ export default function App() {
         setSyncErrorMsg('');
         const txCol = collection(db, 'users', currentUser.uid, 'transactions');
         const empCol = collection(db, 'users', currentUser.uid, 'employees');
+        const histCol = collection(db, 'users', currentUser.uid, 'history');
         const txQuery = query(txCol, where('ownerId', '==', currentUser.uid));
         const empQuery = query(empCol, where('ownerId', '==', currentUser.uid));
+        const histQuery = query(histCol, where('ownerId', '==', currentUser.uid));
         const configRef = doc(db, 'users', currentUser.uid, 'settings', 'config');
 
         try {
@@ -703,16 +855,19 @@ export default function App() {
             return;
           }
 
-          const [txSnap, empSnap, cfgSnap] = await Promise.all([
-            getDocs(txQuery),
-            getDocs(empQuery),
-            getDoc(configRef),
+          const [txSnap, empSnap, histSnap, cfgSnap] = await Promise.all([
+            getDocsFromServer(txQuery).catch(() => getDocs(txQuery)),
+            getDocsFromServer(empQuery).catch(() => getDocs(empQuery)),
+            getDocsFromServer(histQuery).catch(() => getDocs(histQuery)),
+            getDocFromServer(configRef).catch(() => getDoc(configRef)),
           ]);
 
           const existingTxIds = new Set(txSnap.docs.map((d) => d.id));
           const existingEmpIds = new Set(empSnap.docs.map((d) => d.id));
+          const existingHistoryIds = new Set(histSnap.docs.map((d) => d.id));
           cloudTxIdsRef.current = existingTxIds;
           cloudEmpIdsRef.current = existingEmpIds;
+          cloudHistoryIdsRef.current = existingHistoryIds;
           cloudConfigExistsRef.current = cfgSnap.exists();
 
           const localEnv = envelopeRef.current;
@@ -739,6 +894,16 @@ export default function App() {
                 });
                 existingEmpIds.add(sid);
               });
+              localEnv.historyLog.forEach((entry) => {
+                const sid = sanitizeFirestoreId(entry.id);
+                if (existingHistoryIds.has(sid)) return;
+                ops.push({
+                  kind: 'set',
+                  ref: doc(db, 'users', currentUser.uid, 'history', sid),
+                  data: buildHistoryPayload(entry, currentUser.uid),
+                });
+                existingHistoryIds.add(sid);
+              });
               ops.push({
                 kind: 'set',
                 ref: configRef,
@@ -750,25 +915,42 @@ export default function App() {
               setPendingMutations(cleared);
               setHasUnsyncedLocal(false);
               persistEnvelope(localEnv.state, localEnv.activeTab, localEnv.historyLog, false, cleared);
-            } else if (hasAnyPendingMutation(localEnv.pendingMutations)) {
-              const ops = buildOpsForPendingMutations(
-                currentUser.uid,
-                localEnv.state,
-                localEnv.pendingMutations,
-                existingTxIds,
-                existingEmpIds,
-                cfgSnap.exists()
-              );
-              if (ops.length > 0) {
-                await commitBatchChunks(ops);
+            } else {
+              const effectivePending: PendingCloudMutations =
+                histSnap.empty && localEnv.historyLog.length > 0
+                  ? {
+                      ...localEnv.pendingMutations,
+                      dirtyHistoryIds: Array.from(
+                        new Set([
+                          ...localEnv.pendingMutations.dirtyHistoryIds,
+                          ...localEnv.historyLog.map((h) => sanitizeFirestoreId(h.id)),
+                        ])
+                      ),
+                    }
+                  : localEnv.pendingMutations;
+
+              if (hasAnyPendingMutation(effectivePending)) {
+                const ops = buildOpsForPendingMutations(
+                  currentUser.uid,
+                  localEnv.state,
+                  localEnv.historyLog,
+                  effectivePending,
+                  existingTxIds,
+                  existingEmpIds,
+                  existingHistoryIds,
+                  cfgSnap.exists()
+                );
+                if (ops.length > 0) {
+                  await commitBatchChunks(ops);
+                }
+                if (effectivePending.dirtySettings) {
+                  cloudConfigExistsRef.current = true;
+                }
+                const cleared = { ...EMPTY_PENDING_MUTATIONS };
+                setPendingMutations(cleared);
+                setHasUnsyncedLocal(false);
+                persistEnvelope(localEnv.state, localEnv.activeTab, localEnv.historyLog, false, cleared);
               }
-              if (localEnv.pendingMutations.dirtySettings) {
-                cloudConfigExistsRef.current = true;
-              }
-              const cleared = { ...EMPTY_PENDING_MUTATIONS };
-              setPendingMutations(cleared);
-              setHasUnsyncedLocal(false);
-              persistEnvelope(localEnv.state, localEnv.activeTab, localEnv.historyLog, false, cleared);
             }
           } catch (mergeErr) {
             setSyncState('offline');
@@ -801,7 +983,14 @@ export default function App() {
                 };
               });
               cloudTxIdsRef.current = nextIds;
-              setAppState((prev) => ({ ...prev, transactions: remoteTx }));
+              setAppState((prev) => ({
+                ...prev,
+                transactions: mergeRemoteTransactions(
+                  remoteTx,
+                  prev.transactions,
+                  envelopeRef.current.pendingMutations
+                ),
+              }));
               setLastUpdatedAt(Date.now());
               if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
                 setSyncState('synced');
@@ -837,7 +1026,14 @@ export default function App() {
                 };
               });
               cloudEmpIdsRef.current = nextIds;
-              setAppState((prev) => ({ ...prev, masterEmployees: remoteEmp }));
+              setAppState((prev) => ({
+                ...prev,
+                masterEmployees: mergeRemoteEmployees(
+                  remoteEmp,
+                  prev.masterEmployees,
+                  envelopeRef.current.pendingMutations
+                ),
+              }));
               setLastUpdatedAt(Date.now());
               if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
                 setSyncState('synced');
@@ -853,32 +1049,82 @@ export default function App() {
             }
           );
 
+          unsubHistory = onSnapshot(
+            histQuery,
+            (snap) => {
+              const nextIds = new Set<string>();
+              const remoteHist: HistoryEntry[] = snap.docs.map((d) => {
+                nextIds.add(d.id);
+                const data = d.data();
+                return {
+                  id: d.id,
+                  timestamp: Number(data.timestamp) || Date.now(),
+                  action: String(data.action || 'Aktivitas'),
+                  detail: String(data.detail || ''),
+                };
+              });
+              cloudHistoryIdsRef.current = nextIds;
+              setHistoryLog((prev) =>
+                mergeHistoryLists(
+                  remoteHist,
+                  prev,
+                  envelopeRef.current.pendingMutations.dirtyHistoryIds
+                )
+              );
+              setLastUpdatedAt(Date.now());
+              if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
+                setSyncState('synced');
+              }
+            },
+            (error) => {
+              setSyncState('offline');
+              logAndCaptureFirestoreError(
+                error,
+                OperationType.LIST,
+                `users/${currentUser.uid}/history`
+              );
+            }
+          );
+
           unsubSettings = onSnapshot(
             configRef,
             (snap) => {
               if (!snap.exists()) return;
               cloudConfigExistsRef.current = true;
               const d = snap.data();
-              setAppState((prev) => ({
-                ...prev,
-                officials: {
-                  ppkName: String(d.ppkName || DEFAULT_OFFICIALS.ppkName),
-                  ppkNip: String(d.ppkNip ?? DEFAULT_OFFICIALS.ppkNip),
-                  bendName: String(d.bendName || DEFAULT_OFFICIALS.bendName),
-                  bendNip: String(d.bendNip ?? DEFAULT_OFFICIALS.bendNip),
-                  kepsekName: String(d.kepsekName || DEFAULT_OFFICIALS.kepsekName),
-                  kepsekNip: String(d.kepsekNip ?? DEFAULT_OFFICIALS.kepsekNip),
-                },
-                customMainTitle: String(d.customMainTitle || DEFAULT_CUSTOM_MAIN_TITLE),
-                customActivityTitle: String(d.customActivityTitle || DEFAULT_CUSTOM_ACTIVITY_TITLE),
-                currentMonth: String(d.currentMonth || prev.currentMonth),
-                currentCategory:
-                  d.currentCategory === 'ekskul' ||
-                  d.currentCategory === 'gurutamu' ||
-                  d.currentCategory === 'lainnya'
-                    ? d.currentCategory
+              const shouldApplyFilterFromCloud =
+                !appliedInitialCloudSettingsRef.current && !hasUserChangedFilterRef.current;
+              if (shouldApplyFilterFromCloud) {
+                appliedInitialCloudSettingsRef.current = true;
+              }
+              setAppState((prev) => {
+                if (envelopeRef.current.pendingMutations.dirtySettings) {
+                  return prev;
+                }
+                return {
+                  ...prev,
+                  officials: {
+                    ppkName: String(d.ppkName || DEFAULT_OFFICIALS.ppkName),
+                    ppkNip: String(d.ppkNip ?? DEFAULT_OFFICIALS.ppkNip),
+                    bendName: String(d.bendName || DEFAULT_OFFICIALS.bendName),
+                    bendNip: String(d.bendNip ?? DEFAULT_OFFICIALS.bendNip),
+                    kepsekName: String(d.kepsekName || DEFAULT_OFFICIALS.kepsekName),
+                    kepsekNip: String(d.kepsekNip ?? DEFAULT_OFFICIALS.kepsekNip),
+                  },
+                  customMainTitle: String(d.customMainTitle || DEFAULT_CUSTOM_MAIN_TITLE),
+                  customActivityTitle: String(d.customActivityTitle || DEFAULT_CUSTOM_ACTIVITY_TITLE),
+                  currentMonth: shouldApplyFilterFromCloud
+                    ? String(d.currentMonth || prev.currentMonth)
+                    : prev.currentMonth,
+                  currentCategory: shouldApplyFilterFromCloud
+                    ? d.currentCategory === 'ekskul' ||
+                      d.currentCategory === 'gurutamu' ||
+                      d.currentCategory === 'lainnya'
+                      ? d.currentCategory
+                      : prev.currentCategory
                     : prev.currentCategory,
-              }));
+                };
+              });
               setLastUpdatedAt(Date.now());
               if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
                 setSyncState('synced');
@@ -906,6 +1152,7 @@ export default function App() {
       if (unsubAuth) unsubAuth();
       if (unsubTx) unsubTx();
       if (unsubEmp) unsubEmp();
+      if (unsubHistory) unsubHistory();
       if (unsubSettings) unsubSettings();
     };
   }, [ensureUserProfile, buildOpsForPendingMutations, persistEnvelope]);
@@ -959,6 +1206,7 @@ export default function App() {
   };
 
   const handleCategoryChange = (cat: CategoryType): void => {
+    hasUserChangedFilterRef.current = true;
     setEditingTx(null);
     const nextState: AppState = { ...appState, currentCategory: cat };
     const stamp = Date.now();
@@ -970,6 +1218,7 @@ export default function App() {
   };
 
   const handleMonthChange = (month: string): void => {
+    hasUserChangedFilterRef.current = true;
     setEditingTx(null);
     const nextState: AppState = { ...appState, currentMonth: month };
     const stamp = Date.now();
@@ -988,7 +1237,7 @@ export default function App() {
       ? appState.transactions.map((item) => (item.id === normalizedTx.id ? normalizedTx : item))
       : [...appState.transactions, normalizedTx];
     const nextState: AppState = { ...appState, transactions: nextList };
-    const nextHist = appendHistory(
+    const { nextHistory, newEntry } = appendHistory(
       isEdit ? 'Edit SPJ' : 'Tambah SPJ',
       `${normalizedTx.nama} · ${normalizedTx.jenis} (${normalizedTx.bulan} 2026)`
     );
@@ -996,6 +1245,9 @@ export default function App() {
       ...envelopeRef.current.pendingMutations,
       dirtyTxIds: Array.from(new Set([...envelopeRef.current.pendingMutations.dirtyTxIds, safeId])),
       deletedTxIds: envelopeRef.current.pendingMutations.deletedTxIds.filter((id) => id !== safeId),
+      dirtyHistoryIds: Array.from(
+        new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+      ),
     };
     const stamp = Date.now();
 
@@ -1003,8 +1255,13 @@ export default function App() {
     setPendingMutations(nextPending);
     setHasUnsyncedLocal(true);
     setEditingTx(null);
-    persistEnvelope(nextState, activeTab, nextHist, true, nextPending, stamp);
-    showToast(isEdit ? 'Perubahan SPJ tersimpan otomatis.' : 'Entri SPJ baru tersimpan otomatis.');
+    persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, stamp);
+
+    if (!user && !initialBoot.localStorageWritable && idbWritable === false) {
+      showToast('Penyimpanan browser diblokir! Masuk Google (Sinkron Cloud) agar data tidak hilang.');
+    } else {
+      showToast(isEdit ? 'Perubahan SPJ tersimpan otomatis.' : 'Entri SPJ baru tersimpan otomatis.');
+    }
 
     if (user && user.emailVerified) {
       setSyncState('syncing');
@@ -1021,9 +1278,19 @@ export default function App() {
           cloudTxIdsRef.current.has(safeId)
         );
         cloudTxIdsRef.current.add(safeId);
+        if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
+          await setDoc(
+            doc(db, 'users', user.uid, 'history', newEntry.id),
+            buildHistoryPayload(newEntry, user.uid)
+          );
+          cloudHistoryIdsRef.current.add(newEntry.id);
+        }
         const cleanedPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
           dirtyTxIds: envelopeRef.current.pendingMutations.dirtyTxIds.filter((id) => id !== safeId),
+          dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+            (id) => id !== newEntry.id
+          ),
         };
         const stillPending = hasAnyPendingMutation(cleanedPending);
         setPendingMutations(cleanedPending);
@@ -1060,15 +1327,18 @@ export default function App() {
           ...appState,
           transactions: appState.transactions.filter((item) => item.id !== tx.id),
         };
-        const nextHist = appendHistory('Hapus SPJ', `${tx.nama} · ${tx.noBukti}`);
+        const { nextHistory, newEntry } = appendHistory('Hapus SPJ', `${tx.nama} · ${tx.noBukti}`);
         const nextPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
           dirtyTxIds: envelopeRef.current.pendingMutations.dirtyTxIds.filter((id) => id !== safeId),
           deletedTxIds: Array.from(
             new Set([...envelopeRef.current.pendingMutations.deletedTxIds, safeId])
           ),
+          dirtyHistoryIds: Array.from(
+            new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+          ),
         };
-        persistEnvelope(nextState, activeTab, nextHist, true, nextPending, Date.now());
+        persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, Date.now());
 
         setAppState(nextState);
         setPendingMutations(nextPending);
@@ -1079,12 +1349,24 @@ export default function App() {
         if (user && user.emailVerified) {
           setSyncState('syncing');
           try {
+            const profileOk = await ensureUserProfile(user);
+            if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
             await deleteDoc(doc(db, 'users', user.uid, 'transactions', safeId));
             cloudTxIdsRef.current.delete(safeId);
+            if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
+              await setDoc(
+                doc(db, 'users', user.uid, 'history', newEntry.id),
+                buildHistoryPayload(newEntry, user.uid)
+              );
+              cloudHistoryIdsRef.current.add(newEntry.id);
+            }
             const cleanedPending: PendingCloudMutations = {
               ...envelopeRef.current.pendingMutations,
               deletedTxIds: envelopeRef.current.pendingMutations.deletedTxIds.filter(
                 (id) => id !== safeId
+              ),
+              dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+                (id) => id !== newEntry.id
               ),
             };
             const stillPending = hasAnyPendingMutation(cleanedPending);
@@ -1141,7 +1423,7 @@ export default function App() {
       ...appState,
       transactions: [...appState.transactions, ...clonedList],
     };
-    const nextHist = appendHistory(
+    const { nextHistory, newEntry } = appendHistory(
       'Salin Bulan Oktober',
       `${clonedList.length} entri disalin ke ${targetMonth} 2026`
     );
@@ -1149,8 +1431,11 @@ export default function App() {
     const nextPending: PendingCloudMutations = {
       ...envelopeRef.current.pendingMutations,
       dirtyTxIds: Array.from(new Set([...envelopeRef.current.pendingMutations.dirtyTxIds, ...newIds])),
+      dirtyHistoryIds: Array.from(
+        new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+      ),
     };
-    persistEnvelope(nextState, activeTab, nextHist, true, nextPending, Date.now());
+    persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, Date.now());
 
     setAppState(nextState);
     setPendingMutations(nextPending);
@@ -1170,12 +1455,23 @@ export default function App() {
             data: buildTxPayload(tx, user.uid, true),
           };
         });
+        if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
+          ops.push({
+            kind: 'set',
+            ref: doc(db, 'users', user.uid, 'history', newEntry.id),
+            data: buildHistoryPayload(newEntry, user.uid),
+          });
+          cloudHistoryIdsRef.current.add(newEntry.id);
+        }
         await commitBatchChunks(ops);
         const newIdSet = new Set(newIds);
         const cleanedPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
           dirtyTxIds: envelopeRef.current.pendingMutations.dirtyTxIds.filter(
             (id) => !newIdSet.has(id)
+          ),
+          dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+            (id) => id !== newEntry.id
           ),
         };
         const stillPending = hasAnyPendingMutation(cleanedPending);
@@ -1210,18 +1506,24 @@ export default function App() {
       customMainTitle: nextMainTitle || DEFAULT_CUSTOM_MAIN_TITLE,
       customActivityTitle: nextActivityTitle || DEFAULT_CUSTOM_ACTIVITY_TITLE,
     };
-    const nextHist = appendHistory('Simpan Pejabat', `Kepala Sekolah: ${nextOfficials.kepsekName}`);
+    const { nextHistory, newEntry } = appendHistory(
+      'Simpan Pejabat',
+      `Kepala Sekolah: ${nextOfficials.kepsekName}`
+    );
     const nextPending: PendingCloudMutations = {
       ...envelopeRef.current.pendingMutations,
       dirtySettings: true,
+      dirtyHistoryIds: Array.from(
+        new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+      ),
     };
-    persistEnvelope(nextState, activeTab, nextHist, true, nextPending, Date.now());
+    persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, Date.now());
     setAppState(nextState);
     setPendingMutations(nextPending);
     setHasUnsyncedLocal(true);
     showToast('Data Pejabat Penandatangan & Judul berhasil disimpan otomatis.');
     if (user && user.emailVerified) {
-      await syncSettingsToCloud(nextState, true);
+      await syncSettingsToCloud(nextState, true, newEntry);
     }
   };
 
@@ -1232,13 +1534,19 @@ export default function App() {
       ...appState,
       masterEmployees: [...appState.masterEmployees, normalizedEmp],
     };
-    const nextHist = appendHistory('Tambah Pegawai Master', `${normalizedEmp.nama} (${normalizedEmp.jenis})`);
+    const { nextHistory, newEntry } = appendHistory(
+      'Tambah Pegawai Master',
+      `${normalizedEmp.nama} (${normalizedEmp.jenis})`
+    );
     const nextPending: PendingCloudMutations = {
       ...envelopeRef.current.pendingMutations,
       dirtyEmpIds: Array.from(new Set([...envelopeRef.current.pendingMutations.dirtyEmpIds, safeId])),
       deletedEmpIds: envelopeRef.current.pendingMutations.deletedEmpIds.filter((id) => id !== safeId),
+      dirtyHistoryIds: Array.from(
+        new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+      ),
     };
-    persistEnvelope(nextState, activeTab, nextHist, true, nextPending, Date.now());
+    persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, Date.now());
     setAppState(nextState);
     setPendingMutations(nextPending);
     setHasUnsyncedLocal(true);
@@ -1257,9 +1565,19 @@ export default function App() {
           cloudEmpIdsRef.current.has(safeId)
         );
         cloudEmpIdsRef.current.add(safeId);
+        if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
+          await setDoc(
+            doc(db, 'users', user.uid, 'history', newEntry.id),
+            buildHistoryPayload(newEntry, user.uid)
+          );
+          cloudHistoryIdsRef.current.add(newEntry.id);
+        }
         const cleanedPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
           dirtyEmpIds: envelopeRef.current.pendingMutations.dirtyEmpIds.filter((id) => id !== safeId),
+          dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+            (id) => id !== newEntry.id
+          ),
         };
         const stillPending = hasAnyPendingMutation(cleanedPending);
         setPendingMutations(cleanedPending);
@@ -1295,15 +1613,18 @@ export default function App() {
           ...appState,
           masterEmployees: appState.masterEmployees.filter((item) => item.id !== emp.id),
         };
-        const nextHist = appendHistory('Hapus Pegawai Master', emp.nama);
+        const { nextHistory, newEntry } = appendHistory('Hapus Pegawai Master', emp.nama);
         const nextPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
           dirtyEmpIds: envelopeRef.current.pendingMutations.dirtyEmpIds.filter((id) => id !== safeId),
           deletedEmpIds: Array.from(
             new Set([...envelopeRef.current.pendingMutations.deletedEmpIds, safeId])
           ),
+          dirtyHistoryIds: Array.from(
+            new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+          ),
         };
-        persistEnvelope(nextState, activeTab, nextHist, true, nextPending, Date.now());
+        persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, Date.now());
         setAppState(nextState);
         setPendingMutations(nextPending);
         setHasUnsyncedLocal(true);
@@ -1312,12 +1633,24 @@ export default function App() {
         if (user && user.emailVerified) {
           setSyncState('syncing');
           try {
+            const profileOk = await ensureUserProfile(user);
+            if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
             await deleteDoc(doc(db, 'users', user.uid, 'employees', safeId));
             cloudEmpIdsRef.current.delete(safeId);
+            if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
+              await setDoc(
+                doc(db, 'users', user.uid, 'history', newEntry.id),
+                buildHistoryPayload(newEntry, user.uid)
+              );
+              cloudHistoryIdsRef.current.add(newEntry.id);
+            }
             const cleanedPending: PendingCloudMutations = {
               ...envelopeRef.current.pendingMutations,
               deletedEmpIds: envelopeRef.current.pendingMutations.deletedEmpIds.filter(
                 (id) => id !== safeId
+              ),
+              dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+                (id) => id !== newEntry.id
               ),
             };
             const stillPending = hasAnyPendingMutation(cleanedPending);
@@ -1381,7 +1714,7 @@ export default function App() {
         return;
       }
 
-      const nextHist = appendHistory(
+      const { nextHistory, newEntry } = appendHistory(
         'Pulihkan JSON',
         `${nextState.transactions.length} entri SPJ & ${nextState.masterEmployees.length} pegawai`
       );
@@ -1390,9 +1723,12 @@ export default function App() {
         deletedTxIds: [],
         dirtyEmpIds: nextState.masterEmployees.map((e) => sanitizeFirestoreId(e.id)),
         deletedEmpIds: [],
+        dirtyHistoryIds: Array.from(
+          new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+        ),
         dirtySettings: true,
       };
-      persistEnvelope(nextState, activeTab, nextHist, true, nextPending, Date.now());
+      persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, Date.now());
       setAppState(nextState);
       setPendingMutations(nextPending);
       setHasUnsyncedLocal(true);
@@ -1424,6 +1760,14 @@ export default function App() {
               cloudEmpIdsRef.current.add(sid);
             }
           });
+          if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
+            ops.push({
+              kind: 'set',
+              ref: doc(db, 'users', user.uid, 'history', newEntry.id),
+              data: buildHistoryPayload(newEntry, user.uid),
+            });
+            cloudHistoryIdsRef.current.add(newEntry.id);
+          }
           const cfgRef = doc(db, 'users', user.uid, 'settings', 'config');
           if (cloudConfigExistsRef.current) {
             ops.push({ kind: 'update', ref: cfgRef, data: buildSettingsPayload(nextState, user.uid, false) });
@@ -1437,7 +1781,7 @@ export default function App() {
           setHasUnsyncedLocal(false);
           setSyncErrorMsg('');
           setSyncState('synced');
-          persistEnvelope(nextState, activeTab, nextHist, false, cleared);
+          persistEnvelope(nextState, activeTab, nextHistory, false, cleared);
         } catch (err) {
           setSyncState('offline');
           setSyncErrorMsg('Data JSON tersimpan di perangkat, tetapi sinkronisasi ke Cloud gagal.');
@@ -1459,15 +1803,21 @@ export default function App() {
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
         const fresh: AppState = { ...DEFAULT_APP_STATE };
-        const nextHist = appendHistory('Reset Data Awal', 'Dikembalikan ke data default TA 2026');
+        const { nextHistory, newEntry } = appendHistory(
+          'Reset Data Awal',
+          'Dikembalikan ke data default TA 2026'
+        );
         const nextPending: PendingCloudMutations = {
           dirtyTxIds: fresh.transactions.map((t) => sanitizeFirestoreId(t.id)),
           deletedTxIds: [],
           dirtyEmpIds: fresh.masterEmployees.map((e) => sanitizeFirestoreId(e.id)),
           deletedEmpIds: [],
+          dirtyHistoryIds: Array.from(
+            new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newEntry.id])
+          ),
           dirtySettings: true,
         };
-        persistEnvelope(fresh, activeTab, nextHist, true, nextPending, Date.now());
+        persistEnvelope(fresh, activeTab, nextHistory, true, nextPending, Date.now());
         setAppState(fresh);
         setPendingMutations(nextPending);
         setHasUnsyncedLocal(true);
@@ -1506,6 +1856,14 @@ export default function App() {
               });
               nextEmpIds.add(sid);
             });
+            if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
+              ops.push({
+                kind: 'set',
+                ref: doc(db, 'users', user.uid, 'history', newEntry.id),
+                data: buildHistoryPayload(newEntry, user.uid),
+              });
+              cloudHistoryIdsRef.current.add(newEntry.id);
+            }
             const cfgRef = doc(db, 'users', user.uid, 'settings', 'config');
             if (cloudConfigExistsRef.current) {
               ops.push({ kind: 'update', ref: cfgRef, data: buildSettingsPayload(fresh, user.uid, false) });
@@ -1521,7 +1879,7 @@ export default function App() {
             setHasUnsyncedLocal(false);
             setSyncErrorMsg('');
             setSyncState('synced');
-            persistEnvelope(fresh, activeTab, nextHist, false, cleared);
+            persistEnvelope(fresh, activeTab, nextHistory, false, cleared);
           } catch (error) {
             setSyncState('offline');
             setSyncErrorMsg('Reset belum tersinkron ke Cloud. Klik Sinkronkan Ulang.');
@@ -1819,24 +2177,37 @@ export default function App() {
                   'Browser di komputer ini membatasi penyimpanan lokal. Masuk dengan Google agar data tersimpan permanen di Cloud dan bisa dibuka dari komputer lain.'}
               </span>
             </div>
-            {!user ? (
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap self-start sm:self-auto"
-              >
-                Aktifkan Sinkron Cloud
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void flushPendingMutations()}
-                className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap self-start sm:self-auto flex items-center gap-1.5"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Sinkronkan Ulang
-              </button>
-            )}
+            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
+              {typeof window !== 'undefined' && (
+                <a
+                  href={window.location.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 font-semibold whitespace-nowrap flex items-center gap-1.5 transition"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Buka di Tab Baru
+                </a>
+              )}
+              {!user ? (
+                <button
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap"
+                >
+                  Aktifkan Sinkron Cloud
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void flushPendingMutations()}
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  Sinkronkan Ulang
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1872,6 +2243,7 @@ export default function App() {
               editingTx={editingTx}
               onCancelEdit={() => setEditingTx(null)}
               onSubmitTx={handleSubmitTx}
+              onValidationError={showToast}
             />
             <TransactionsList
               items={filteredTransactions}
