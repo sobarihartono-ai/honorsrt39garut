@@ -40,6 +40,13 @@ export interface Officials {
   kepsekNip: string;
 }
 
+export interface HistoryEntry {
+  id: string;
+  timestamp: number;
+  action: string;
+  detail: string;
+}
+
 export interface AppState {
   transactions: Transaction[];
   masterEmployees: MasterEmployee[];

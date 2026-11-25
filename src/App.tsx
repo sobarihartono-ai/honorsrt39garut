@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
 import {
@@ -16,6 +16,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {
+  AlertTriangle,
   CheckCircle2,
   Cloud,
   CloudOff,
@@ -23,6 +24,7 @@ import {
   FileCheck2,
   FileSpreadsheet,
   FileText,
+  History,
   LogIn,
   LogOut,
   Printer,
@@ -46,7 +48,6 @@ import {
   DEFAULT_CUSTOM_MAIN_TITLE,
   DEFAULT_MASTER_EMPLOYEES,
   DEFAULT_OFFICIALS,
-  DEFAULT_TRANSACTIONS,
   MONTHS,
   MONTH_ROMAN,
 } from './data/seedData';
@@ -61,6 +62,7 @@ import {
 import {
   AppState,
   CategoryType,
+  HistoryEntry,
   MasterEmployee,
   Officials,
   PrintJobMeta,
@@ -68,48 +70,15 @@ import {
   Transaction,
 } from './types';
 import { clampStr, sanitizeFirestoreId } from './utils/formatters';
-
-const STORAGE_KEY = 'srt39_honor_transpor_v4';
-
-function loadLocalState(): AppState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_APP_STATE;
-    const parsed = JSON.parse(raw) as Partial<AppState>;
-    return {
-      transactions: Array.isArray(parsed.transactions) ? parsed.transactions : DEFAULT_TRANSACTIONS,
-      masterEmployees: Array.isArray(parsed.masterEmployees)
-        ? parsed.masterEmployees
-        : DEFAULT_MASTER_EMPLOYEES,
-      officials: parsed.officials ? { ...DEFAULT_OFFICIALS, ...parsed.officials } : DEFAULT_OFFICIALS,
-      customMainTitle:
-        typeof parsed.customMainTitle === 'string' && parsed.customMainTitle.trim()
-          ? parsed.customMainTitle
-          : DEFAULT_CUSTOM_MAIN_TITLE,
-      customActivityTitle:
-        typeof parsed.customActivityTitle === 'string' && parsed.customActivityTitle.trim()
-          ? parsed.customActivityTitle
-          : DEFAULT_CUSTOM_ACTIVITY_TITLE,
-      currentMonth: typeof parsed.currentMonth === 'string' ? parsed.currentMonth : 'November',
-      currentCategory:
-        parsed.currentCategory === 'ekskul' ||
-        parsed.currentCategory === 'gurutamu' ||
-        parsed.currentCategory === 'lainnya'
-          ? parsed.currentCategory
-          : 'gurutamu',
-    };
-  } catch {
-    return DEFAULT_APP_STATE;
-  }
-}
-
-function saveLocalState(state: AppState): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch (err) {
-    console.warn('Gagal menulis localStorage:', err);
-  }
-}
+import {
+  PersistedEnvelope,
+  loadInitialEnvelope,
+  normalizeAppState,
+  readIndexedDbEnvelope,
+  saveEnvelopeSync,
+  writeIndexedDbEnvelope,
+} from './utils/localPersistence';
+import { downloadExcelReport, downloadWordReport } from './utils/officeGenerator';
 
 function buildTxPayload(tx: Transaction, uid: string, isCreate: boolean) {
   const base = {
@@ -185,9 +154,25 @@ function buildSettingsPayload(state: AppState, uid: string, isCreate: boolean) {
   return base;
 }
 
+function logAndCaptureFirestoreError(error: unknown, op: OperationType, path: string | null): void {
+  try {
+    handleFirestoreError(error, op, path);
+  } catch {
+    // Error sudah dicatat ke console dalam format FirestoreErrorInfo
+  }
+}
+
 export default function App() {
-  const [appState, setAppState] = useState<AppState>(() => loadLocalState());
-  const [activeTab, setActiveTab] = useState<TabType>('kelola');
+  const initialBoot = useMemo(() => loadInitialEnvelope(), []);
+
+  const [appState, setAppState] = useState<AppState>(initialBoot.envelope.state);
+  const [activeTab, setActiveTab] = useState<TabType>(initialBoot.envelope.activeTab);
+  const [historyLog, setHistoryLog] = useState<HistoryEntry[]>(initialBoot.envelope.historyLog);
+  const [hasUnsyncedLocal, setHasUnsyncedLocal] = useState<boolean>(
+    initialBoot.envelope.hasUnsyncedLocalChanges
+  );
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number>(initialBoot.envelope.updatedAt);
+
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
   const [dhFilterId, setDhFilterId] = useState<string>('ALL');
   const [ttFilterId, setTtFilterId] = useState<string>('ALL');
@@ -195,10 +180,19 @@ export default function App() {
   const [printJob, setPrintJob] = useState<PrintJobMeta | null>(null);
   const [lastPrintSnapshot, setLastPrintSnapshot] = useState<PrintJobMeta | null>(null);
   const [toastMsg, setToastMsg] = useState<string>('');
+  const [busyExport, setBusyExport] = useState<string | null>(null);
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
 
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [syncState, setSyncState] = useState<'local' | 'syncing' | 'synced' | 'offline'>('local');
+  const [idbReady, setIdbReady] = useState(false);
+
+  const envelopeRef = useRef<PersistedEnvelope>(initialBoot.envelope);
+  const ensuredUidRef = useRef<string | null>(null);
+  const cloudTxIdsRef = useRef<Set<string>>(new Set());
+  const cloudEmpIdsRef = useRef<Set<string>>(new Set());
+  const cloudConfigExistsRef = useRef<boolean>(false);
 
   const [confirmState, setConfirmState] = useState<{
     open: boolean;
@@ -220,14 +214,75 @@ export default function App() {
 
   useEffect(() => {
     if (!toastMsg) return;
-    const t = setTimeout(() => setToastMsg(''), 3200);
+    const t = setTimeout(() => setToastMsg(''), 3400);
     return () => clearTimeout(t);
   }, [toastMsg]);
 
-  // Auto-save to localStorage immediately on every state change
+  // Hydrate from IndexedDB on startup if IndexedDB has a newer snapshot than localStorage/window.name
   useEffect(() => {
-    saveLocalState(appState);
-  }, [appState]);
+    let active = true;
+    readIndexedDbEnvelope().then((idbEnv) => {
+      if (!active) return;
+      if (idbEnv && idbEnv.updatedAt > envelopeRef.current.updatedAt) {
+        envelopeRef.current = idbEnv;
+        setAppState(idbEnv.state);
+        setActiveTab(idbEnv.activeTab);
+        setHistoryLog(idbEnv.historyLog);
+        setHasUnsyncedLocal(idbEnv.hasUnsyncedLocalChanges);
+        setLastUpdatedAt(idbEnv.updatedAt);
+        saveEnvelopeSync(idbEnv);
+      }
+      setIdbReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Multi-layer instant auto-save whenever state, activeTab, or historyLog changes
+  const persistEnvelope = useCallback(
+    (
+      nextState: AppState,
+      nextTab: TabType,
+      nextHistory: HistoryEntry[],
+      unsynced: boolean,
+      stamp = Date.now()
+    ) => {
+      const env: PersistedEnvelope = {
+        state: nextState,
+        activeTab: nextTab,
+        historyLog: nextHistory,
+        hasUnsyncedLocalChanges: unsynced,
+        updatedAt: stamp,
+      };
+      envelopeRef.current = env;
+      setLastUpdatedAt(stamp);
+      saveEnvelopeSync(env);
+      void writeIndexedDbEnvelope(env);
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!idbReady) return;
+    const stamp = lastUpdatedAt || Date.now();
+    persistEnvelope(appState, activeTab, historyLog, hasUnsyncedLocal, stamp);
+  }, [appState, activeTab, historyLog, hasUnsyncedLocal, idbReady, lastUpdatedAt, persistEnvelope]);
+
+  const appendHistory = useCallback(
+    (action: string, detail: string): HistoryEntry[] => {
+      const entry: HistoryEntry = {
+        id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        timestamp: Date.now(),
+        action,
+        detail,
+      };
+      const next = [entry, ...envelopeRef.current.historyLog].slice(0, 50);
+      setHistoryLog(next);
+      return next;
+    },
+    []
+  );
 
   // Verify Firestore connection on startup
   useEffect(() => {
@@ -236,7 +291,8 @@ export default function App() {
     });
   }, []);
 
-  const ensureUserProfile = useCallback(async (u: User) => {
+  const ensureUserProfile = useCallback(async (u: User): Promise<boolean> => {
+    if (ensuredUidRef.current === u.uid) return true;
     const userRef = doc(db, 'users', u.uid);
     try {
       const snap = await getDoc(userRef);
@@ -255,8 +311,11 @@ export default function App() {
           updatedAt: serverTimestamp(),
         });
       }
+      ensuredUidRef.current = u.uid;
+      return true;
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `users/${u.uid}`);
+      logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${u.uid}`);
+      return false;
     }
   }, []);
 
@@ -265,18 +324,29 @@ export default function App() {
       if (!user || !user.emailVerified) return;
       setSyncState('syncing');
       try {
-        await ensureUserProfile(user);
+        const ok = await ensureUserProfile(user);
+        if (!ok) {
+          setSyncState('offline');
+          return;
+        }
         const configRef = doc(db, 'users', user.uid, 'settings', 'config');
-        const snap = await getDoc(configRef);
-        if (snap.exists()) {
+        if (cloudConfigExistsRef.current) {
           await updateDoc(configRef, buildSettingsPayload(nextState, user.uid, false));
         } else {
-          await setDoc(configRef, buildSettingsPayload(nextState, user.uid, true));
+          const snap = await getDoc(configRef);
+          if (snap.exists()) {
+            cloudConfigExistsRef.current = true;
+            await updateDoc(configRef, buildSettingsPayload(nextState, user.uid, false));
+          } else {
+            await setDoc(configRef, buildSettingsPayload(nextState, user.uid, true));
+            cloudConfigExistsRef.current = true;
+          }
         }
+        setHasUnsyncedLocal(false);
         setSyncState('synced');
       } catch (error) {
         setSyncState('offline');
-        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/settings/config`);
+        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}/settings/config`);
       }
     },
     [user, ensureUserProfile]
@@ -295,6 +365,10 @@ export default function App() {
       unsubTx = null;
       unsubEmp = null;
       unsubSettings = null;
+      ensuredUidRef.current = null;
+      cloudTxIdsRef.current.clear();
+      cloudEmpIdsRef.current.clear();
+      cloudConfigExistsRef.current = false;
 
       setUser(currentUser);
       setAuthReady(true);
@@ -306,7 +380,11 @@ export default function App() {
 
       setSyncState('syncing');
       try {
-        await ensureUserProfile(currentUser);
+        const profileOk = await ensureUserProfile(currentUser);
+        if (!profileOk) {
+          setSyncState('offline');
+          return;
+        }
 
         const txCol = collection(db, 'users', currentUser.uid, 'transactions');
         const empCol = collection(db, 'users', currentUser.uid, 'employees');
@@ -320,31 +398,56 @@ export default function App() {
           getDoc(configRef),
         ]);
 
-        if (txSnap.empty && empSnap.empty && !cfgSnap.exists()) {
-          const snapshotLocal = loadLocalState();
+        const existingTxIds = new Set(txSnap.docs.map((d) => d.id));
+        const existingEmpIds = new Set(empSnap.docs.map((d) => d.id));
+        cloudTxIdsRef.current = existingTxIds;
+        cloudEmpIdsRef.current = existingEmpIds;
+        cloudConfigExistsRef.current = cfgSnap.exists();
+
+        const localEnv = envelopeRef.current;
+
+        // Upload initial data OR merge unsynced pre-login local edits safely
+        if (
+          (txSnap.empty && empSnap.empty && !cfgSnap.exists()) ||
+          localEnv.hasUnsyncedLocalChanges
+        ) {
           const batch = writeBatch(db);
-          snapshotLocal.transactions.forEach((tx) => {
+          localEnv.state.transactions.forEach((tx) => {
             const safeId = sanitizeFirestoreId(tx.id);
-            batch.set(
-              doc(db, 'users', currentUser.uid, 'transactions', safeId),
-              buildTxPayload(tx, currentUser.uid, true)
-            );
+            const ref = doc(db, 'users', currentUser.uid, 'transactions', safeId);
+            if (existingTxIds.has(safeId)) {
+              batch.update(ref, buildTxPayload(tx, currentUser.uid, false));
+            } else {
+              batch.set(ref, buildTxPayload(tx, currentUser.uid, true));
+              existingTxIds.add(safeId);
+            }
           });
-          snapshotLocal.masterEmployees.forEach((emp) => {
+          localEnv.state.masterEmployees.forEach((emp) => {
             const safeId = sanitizeFirestoreId(emp.id);
-            batch.set(
-              doc(db, 'users', currentUser.uid, 'employees', safeId),
-              buildEmployeePayload(emp, currentUser.uid, true)
-            );
+            const ref = doc(db, 'users', currentUser.uid, 'employees', safeId);
+            if (existingEmpIds.has(safeId)) {
+              batch.update(ref, buildEmployeePayload(emp, currentUser.uid, false));
+            } else {
+              batch.set(ref, buildEmployeePayload(emp, currentUser.uid, true));
+              existingEmpIds.add(safeId);
+            }
           });
-          batch.set(configRef, buildSettingsPayload(snapshotLocal, currentUser.uid, true));
+          if (cfgSnap.exists()) {
+            batch.update(configRef, buildSettingsPayload(localEnv.state, currentUser.uid, false));
+          } else {
+            batch.set(configRef, buildSettingsPayload(localEnv.state, currentUser.uid, true));
+            cloudConfigExistsRef.current = true;
+          }
           await batch.commit();
+          setHasUnsyncedLocal(false);
         }
 
         unsubTx = onSnapshot(
           txQuery,
           (snap) => {
+            const nextIds = new Set<string>();
             const remoteTx: Transaction[] = snap.docs.map((d) => {
+              nextIds.add(d.id);
               const data = d.data();
               return {
                 id: d.id,
@@ -363,18 +466,23 @@ export default function App() {
                 customRangka: typeof data.customRangka === 'string' ? data.customRangka : '',
               };
             });
+            cloudTxIdsRef.current = nextIds;
             setAppState((prev) => ({ ...prev, transactions: remoteTx }));
+            setLastUpdatedAt(Date.now());
             setSyncState('synced');
           },
           (error) => {
-            handleFirestoreError(error, OperationType.LIST, `users/${currentUser.uid}/transactions`);
+            setSyncState('offline');
+            logAndCaptureFirestoreError(error, OperationType.LIST, `users/${currentUser.uid}/transactions`);
           }
         );
 
         unsubEmp = onSnapshot(
           empQuery,
           (snap) => {
+            const nextIds = new Set<string>();
             const remoteEmp: MasterEmployee[] = snap.docs.map((d) => {
+              nextIds.add(d.id);
               const data = d.data();
               return {
                 id: d.id,
@@ -388,11 +496,14 @@ export default function App() {
                 pajakRate: Number(data.pajakRate) || 0,
               };
             });
+            cloudEmpIdsRef.current = nextIds;
             setAppState((prev) => ({ ...prev, masterEmployees: remoteEmp }));
+            setLastUpdatedAt(Date.now());
             setSyncState('synced');
           },
           (error) => {
-            handleFirestoreError(error, OperationType.LIST, `users/${currentUser.uid}/employees`);
+            setSyncState('offline');
+            logAndCaptureFirestoreError(error, OperationType.LIST, `users/${currentUser.uid}/employees`);
           }
         );
 
@@ -400,6 +511,7 @@ export default function App() {
           configRef,
           (snap) => {
             if (!snap.exists()) return;
+            cloudConfigExistsRef.current = true;
             const d = snap.data();
             setAppState((prev) => ({
               ...prev,
@@ -421,15 +533,17 @@ export default function App() {
                   ? d.currentCategory
                   : prev.currentCategory,
             }));
+            setLastUpdatedAt(Date.now());
             setSyncState('synced');
           },
           (error) => {
-            handleFirestoreError(error, OperationType.GET, `users/${currentUser.uid}/settings/config`);
+            setSyncState('offline');
+            logAndCaptureFirestoreError(error, OperationType.GET, `users/${currentUser.uid}/settings/config`);
           }
         );
       } catch (error) {
         setSyncState('offline');
-        handleFirestoreError(error, OperationType.WRITE, `users/${currentUser.uid}`);
+        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${currentUser.uid}`);
       }
     });
 
@@ -444,10 +558,10 @@ export default function App() {
   const handleGoogleSignIn = async (): Promise<void> => {
     try {
       await signInWithPopup(auth, googleProvider);
-      showToast('Berhasil masuk dengan Google. Sinkronisasi Cloud aktif.');
+      showToast('Berhasil masuk dengan Google. Riwayat disinkronkan ke Cloud.');
     } catch (err) {
       console.error('Login Google gagal:', err);
-      showToast('Login Google dibatalkan atau gagal. Data tetap tersimpan otomatis di perangkat.');
+      showToast('Login Google dibatalkan atau pop-up diblokir. Data tetap tersimpan otomatis di perangkat.');
     }
   };
 
@@ -461,7 +575,6 @@ export default function App() {
     }
   };
 
-  // Filtered transactions for active category & month
   const filteredTransactions = useMemo(() => {
     return appState.transactions.filter((t) => {
       const catMatch = t.category === appState.currentCategory;
@@ -470,7 +583,6 @@ export default function App() {
     });
   }, [appState.transactions, appState.currentCategory, appState.currentMonth]);
 
-  // Keep DH & TT filter selection valid
   useEffect(() => {
     if (dhFilterId !== 'ALL' && !filteredTransactions.some((t) => t.id === dhFilterId)) {
       setDhFilterId('ALL');
@@ -480,10 +592,20 @@ export default function App() {
     }
   }, [filteredTransactions, dhFilterId, ttFilterId]);
 
+  const handleTabChange = (tab: TabType): void => {
+    setActiveTab(tab);
+    const stamp = Date.now();
+    persistEnvelope(appState, tab, historyLog, hasUnsyncedLocal, stamp);
+  };
+
   const handleCategoryChange = (cat: CategoryType): void => {
     setEditingTx(null);
     const nextState: AppState = { ...appState, currentCategory: cat };
+    const stamp = Date.now();
+    const nextUnsynced = !(user && user.emailVerified) ? true : hasUnsyncedLocal;
     setAppState(nextState);
+    setHasUnsyncedLocal(nextUnsynced);
+    persistEnvelope(nextState, activeTab, historyLog, nextUnsynced, stamp);
     if (user && user.emailVerified) {
       void syncSettingsToCloud(nextState);
     }
@@ -492,7 +614,11 @@ export default function App() {
   const handleMonthChange = (month: string): void => {
     setEditingTx(null);
     const nextState: AppState = { ...appState, currentMonth: month };
+    const stamp = Date.now();
+    const nextUnsynced = !(user && user.emailVerified) ? true : hasUnsyncedLocal;
     setAppState(nextState);
+    setHasUnsyncedLocal(nextUnsynced);
+    persistEnvelope(nextState, activeTab, historyLog, nextUnsynced, stamp);
     if (user && user.emailVerified) {
       void syncSettingsToCloud(nextState);
     }
@@ -502,30 +628,40 @@ export default function App() {
     const safeId = sanitizeFirestoreId(tx.id);
     const normalizedTx: Transaction = { ...tx, id: safeId };
 
-    setAppState((prev) => {
-      const nextList = isEdit
-        ? prev.transactions.map((item) => (item.id === normalizedTx.id ? normalizedTx : item))
-        : [...prev.transactions, normalizedTx];
-      return { ...prev, transactions: nextList };
-    });
+    const nextList = isEdit
+      ? appState.transactions.map((item) => (item.id === normalizedTx.id ? normalizedTx : item))
+      : [...appState.transactions, normalizedTx];
+    const nextState: AppState = { ...appState, transactions: nextList };
+    const nextHist = appendHistory(
+      isEdit ? 'Edit SPJ' : 'Tambah SPJ',
+      `${normalizedTx.nama} · ${normalizedTx.jenis} (${normalizedTx.bulan} 2026)`
+    );
+    const isCloud = Boolean(user && user.emailVerified);
+    const stamp = Date.now();
+
+    setAppState(nextState);
+    setHasUnsyncedLocal(!isCloud);
     setEditingTx(null);
-    showToast(isEdit ? 'Perubahan entri SPJ disimpan otomatis.' : 'Entri SPJ baru disimpan otomatis.');
+    persistEnvelope(nextState, activeTab, nextHist, !isCloud, stamp);
+    showToast(isEdit ? 'Perubahan SPJ tersimpan otomatis.' : 'Entri SPJ baru tersimpan otomatis.');
 
     if (user && user.emailVerified) {
       setSyncState('syncing');
       try {
         await ensureUserProfile(user);
         const txRef = doc(db, 'users', user.uid, 'transactions', safeId);
-        const existing = await getDoc(txRef);
-        if (existing.exists()) {
+        if (cloudTxIdsRef.current.has(safeId)) {
           await updateDoc(txRef, buildTxPayload(normalizedTx, user.uid, false));
         } else {
           await setDoc(txRef, buildTxPayload(normalizedTx, user.uid, true));
+          cloudTxIdsRef.current.add(safeId);
         }
         setSyncState('synced');
       } catch (error) {
+        setHasUnsyncedLocal(true);
         setSyncState('offline');
-        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/transactions/${safeId}`);
+        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}/transactions/${safeId}`);
+        showToast('Tersimpan di perangkat, tetapi sinkronisasi Cloud gagal. Periksa koneksi Anda.');
       }
     }
   };
@@ -538,10 +674,16 @@ export default function App() {
       confirmLabel: 'Ya, Hapus',
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
-        setAppState((prev) => ({
-          ...prev,
-          transactions: prev.transactions.filter((item) => item.id !== tx.id),
-        }));
+        const nextState: AppState = {
+          ...appState,
+          transactions: appState.transactions.filter((item) => item.id !== tx.id),
+        };
+        const nextHist = appendHistory('Hapus SPJ', `${tx.nama} · ${tx.noBukti}`);
+        const isCloud = Boolean(user && user.emailVerified);
+        persistEnvelope(nextState, activeTab, nextHist, !isCloud, Date.now());
+
+        setAppState(nextState);
+        setHasUnsyncedLocal(!isCloud);
         if (editingTx?.id === tx.id) setEditingTx(null);
         showToast('Entri SPJ berhasil dihapus.');
 
@@ -550,10 +692,11 @@ export default function App() {
           const safeId = sanitizeFirestoreId(tx.id);
           try {
             await deleteDoc(doc(db, 'users', user.uid, 'transactions', safeId));
+            cloudTxIdsRef.current.delete(safeId);
             setSyncState('synced');
           } catch (error) {
             setSyncState('offline');
-            handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/transactions/${safeId}`);
+            logAndCaptureFirestoreError(error, OperationType.DELETE, `users/${user.uid}/transactions/${safeId}`);
           }
         }
       },
@@ -584,10 +727,19 @@ export default function App() {
       noBukti: src.noBukti.replace(/\/X\//g, `/${targetRoman}/`),
     }));
 
-    setAppState((prev) => ({
-      ...prev,
-      transactions: [...prev.transactions, ...clonedList],
-    }));
+    const nextState: AppState = {
+      ...appState,
+      transactions: [...appState.transactions, ...clonedList],
+    };
+    const nextHist = appendHistory(
+      'Salin Bulan Oktober',
+      `${clonedList.length} entri disalin ke ${targetMonth} 2026`
+    );
+    const isCloud = Boolean(user && user.emailVerified);
+    persistEnvelope(nextState, activeTab, nextHist, !isCloud, Date.now());
+
+    setAppState(nextState);
+    setHasUnsyncedLocal(!isCloud);
     showToast(`${clonedList.length} entri disalin dari Oktober ke ${targetMonth} 2026.`);
 
     if (user && user.emailVerified) {
@@ -600,12 +752,14 @@ export default function App() {
             doc(db, 'users', user.uid, 'transactions', tx.id),
             buildTxPayload(tx, user.uid, true)
           );
+          cloudTxIdsRef.current.add(tx.id);
         });
         await batch.commit();
         setSyncState('synced');
       } catch (error) {
+        setHasUnsyncedLocal(true);
         setSyncState('offline');
-        handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}/transactions`);
+        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}/transactions`);
       }
     }
   };
@@ -621,7 +775,11 @@ export default function App() {
       customMainTitle: nextMainTitle || DEFAULT_CUSTOM_MAIN_TITLE,
       customActivityTitle: nextActivityTitle || DEFAULT_CUSTOM_ACTIVITY_TITLE,
     };
+    const nextHist = appendHistory('Simpan Pejabat', `Kepala Sekolah: ${nextOfficials.kepsekName}`);
+    const isCloud = Boolean(user && user.emailVerified);
+    persistEnvelope(nextState, activeTab, nextHist, !isCloud, Date.now());
     setAppState(nextState);
+    setHasUnsyncedLocal(!isCloud);
     showToast('Data Pejabat Penandatangan & Judul berhasil disimpan otomatis.');
     if (user && user.emailVerified) {
       await syncSettingsToCloud(nextState);
@@ -631,10 +789,15 @@ export default function App() {
   const handleAddEmployee = async (emp: MasterEmployee): Promise<void> => {
     const safeId = sanitizeFirestoreId(emp.id);
     const normalizedEmp: MasterEmployee = { ...emp, id: safeId };
-    setAppState((prev) => ({
-      ...prev,
-      masterEmployees: [...prev.masterEmployees, normalizedEmp],
-    }));
+    const nextState: AppState = {
+      ...appState,
+      masterEmployees: [...appState.masterEmployees, normalizedEmp],
+    };
+    const nextHist = appendHistory('Tambah Pegawai Master', `${normalizedEmp.nama} (${normalizedEmp.jenis})`);
+    const isCloud = Boolean(user && user.emailVerified);
+    persistEnvelope(nextState, activeTab, nextHist, !isCloud, Date.now());
+    setAppState(nextState);
+    setHasUnsyncedLocal(!isCloud);
     showToast('Pegawai master ditambahkan dan tersimpan otomatis.');
 
     if (user && user.emailVerified) {
@@ -645,10 +808,12 @@ export default function App() {
           doc(db, 'users', user.uid, 'employees', safeId),
           buildEmployeePayload(normalizedEmp, user.uid, true)
         );
+        cloudEmpIdsRef.current.add(safeId);
         setSyncState('synced');
       } catch (error) {
+        setHasUnsyncedLocal(true);
         setSyncState('offline');
-        handleFirestoreError(error, OperationType.CREATE, `users/${user.uid}/employees/${safeId}`);
+        logAndCaptureFirestoreError(error, OperationType.CREATE, `users/${user.uid}/employees/${safeId}`);
       }
     }
   };
@@ -661,10 +826,15 @@ export default function App() {
       confirmLabel: 'Ya, Hapus',
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
-        setAppState((prev) => ({
-          ...prev,
-          masterEmployees: prev.masterEmployees.filter((item) => item.id !== emp.id),
-        }));
+        const nextState: AppState = {
+          ...appState,
+          masterEmployees: appState.masterEmployees.filter((item) => item.id !== emp.id),
+        };
+        const nextHist = appendHistory('Hapus Pegawai Master', emp.nama);
+        const isCloud = Boolean(user && user.emailVerified);
+        persistEnvelope(nextState, activeTab, nextHist, !isCloud, Date.now());
+        setAppState(nextState);
+        setHasUnsyncedLocal(!isCloud);
         showToast('Pegawai master dihapus.');
 
         if (user && user.emailVerified) {
@@ -672,10 +842,11 @@ export default function App() {
           const safeId = sanitizeFirestoreId(emp.id);
           try {
             await deleteDoc(doc(db, 'users', user.uid, 'employees', safeId));
+            cloudEmpIdsRef.current.delete(safeId);
             setSyncState('synced');
           } catch (error) {
             setSyncState('offline');
-            handleFirestoreError(error, OperationType.DELETE, `users/${user.uid}/employees/${safeId}`);
+            logAndCaptureFirestoreError(error, OperationType.DELETE, `users/${user.uid}/employees/${safeId}`);
           }
         }
       },
@@ -701,30 +872,23 @@ export default function App() {
     reader.onload = async (ev) => {
       try {
         const parsed = JSON.parse(String(ev.target?.result || '{}')) as Partial<AppState>;
-        const nextState: AppState = {
+        const nextState = normalizeAppState({
+          ...appState,
+          ...parsed,
           transactions: Array.isArray(parsed.transactions) ? parsed.transactions : appState.transactions,
           masterEmployees: Array.isArray(parsed.masterEmployees)
             ? parsed.masterEmployees
             : appState.masterEmployees,
           officials: parsed.officials ? { ...DEFAULT_OFFICIALS, ...parsed.officials } : appState.officials,
-          customMainTitle:
-            typeof parsed.customMainTitle === 'string' && parsed.customMainTitle.trim()
-              ? parsed.customMainTitle
-              : appState.customMainTitle,
-          customActivityTitle:
-            typeof parsed.customActivityTitle === 'string' && parsed.customActivityTitle.trim()
-              ? parsed.customActivityTitle
-              : appState.customActivityTitle,
-          currentMonth:
-            typeof parsed.currentMonth === 'string' ? parsed.currentMonth : appState.currentMonth,
-          currentCategory:
-            parsed.currentCategory === 'ekskul' ||
-            parsed.currentCategory === 'gurutamu' ||
-            parsed.currentCategory === 'lainnya'
-              ? parsed.currentCategory
-              : appState.currentCategory,
-        };
+        });
+        const nextHist = appendHistory(
+          'Pulihkan JSON',
+          `${nextState.transactions.length} entri SPJ & ${nextState.masterEmployees.length} pegawai`
+        );
+        const isCloud = Boolean(user && user.emailVerified);
+        persistEnvelope(nextState, activeTab, nextHist, !isCloud, Date.now());
         setAppState(nextState);
+        setHasUnsyncedLocal(!isCloud);
         showToast('Data berhasil dipulihkan dari file JSON.');
 
         if (user && user.emailVerified) {
@@ -733,23 +897,33 @@ export default function App() {
           const batch = writeBatch(db);
           nextState.transactions.forEach((tx) => {
             const sid = sanitizeFirestoreId(tx.id);
-            batch.set(
-              doc(db, 'users', user.uid, 'transactions', sid),
-              buildTxPayload(tx, user.uid, true)
-            );
+            const ref = doc(db, 'users', user.uid, 'transactions', sid);
+            if (cloudTxIdsRef.current.has(sid)) {
+              batch.update(ref, buildTxPayload(tx, user.uid, false));
+            } else {
+              batch.set(ref, buildTxPayload(tx, user.uid, true));
+              cloudTxIdsRef.current.add(sid);
+            }
           });
           nextState.masterEmployees.forEach((emp) => {
             const sid = sanitizeFirestoreId(emp.id);
-            batch.set(
-              doc(db, 'users', user.uid, 'employees', sid),
-              buildEmployeePayload(emp, user.uid, true)
-            );
+            const ref = doc(db, 'users', user.uid, 'employees', sid);
+            if (cloudEmpIdsRef.current.has(sid)) {
+              batch.update(ref, buildEmployeePayload(emp, user.uid, false));
+            } else {
+              batch.set(ref, buildEmployeePayload(emp, user.uid, true));
+              cloudEmpIdsRef.current.add(sid);
+            }
           });
-          batch.set(
-            doc(db, 'users', user.uid, 'settings', 'config'),
-            buildSettingsPayload(nextState, user.uid, true)
-          );
+          const cfgRef = doc(db, 'users', user.uid, 'settings', 'config');
+          if (cloudConfigExistsRef.current) {
+            batch.update(cfgRef, buildSettingsPayload(nextState, user.uid, false));
+          } else {
+            batch.set(cfgRef, buildSettingsPayload(nextState, user.uid, true));
+            cloudConfigExistsRef.current = true;
+          }
           await batch.commit();
+          setHasUnsyncedLocal(false);
           setSyncState('synced');
         }
       } catch (err) {
@@ -770,7 +944,11 @@ export default function App() {
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
         const fresh: AppState = { ...DEFAULT_APP_STATE };
+        const nextHist = appendHistory('Reset Data Awal', 'Dikembalikan ke data default TA 2026');
+        const isCloud = Boolean(user && user.emailVerified);
+        persistEnvelope(fresh, activeTab, nextHist, !isCloud, Date.now());
         setAppState(fresh);
+        setHasUnsyncedLocal(!isCloud);
         setEditingTx(null);
         showToast('Seluruh data dikembalikan ke pengaturan awal 2026.');
 
@@ -785,12 +963,15 @@ export default function App() {
             const batch = writeBatch(db);
             curTx.docs.forEach((d) => batch.delete(d.ref));
             curEmp.docs.forEach((d) => batch.delete(d.ref));
+            const nextTxIds = new Set<string>();
+            const nextEmpIds = new Set<string>();
             fresh.transactions.forEach((tx) => {
               const sid = sanitizeFirestoreId(tx.id);
               batch.set(
                 doc(db, 'users', user.uid, 'transactions', sid),
                 buildTxPayload(tx, user.uid, true)
               );
+              nextTxIds.add(sid);
             });
             fresh.masterEmployees.forEach((emp) => {
               const sid = sanitizeFirestoreId(emp.id);
@@ -798,16 +979,23 @@ export default function App() {
                 doc(db, 'users', user.uid, 'employees', sid),
                 buildEmployeePayload(emp, user.uid, true)
               );
+              nextEmpIds.add(sid);
             });
-            batch.set(
-              doc(db, 'users', user.uid, 'settings', 'config'),
-              buildSettingsPayload(fresh, user.uid, true)
-            );
+            const cfgRef = doc(db, 'users', user.uid, 'settings', 'config');
+            if (cloudConfigExistsRef.current) {
+              batch.update(cfgRef, buildSettingsPayload(fresh, user.uid, false));
+            } else {
+              batch.set(cfgRef, buildSettingsPayload(fresh, user.uid, true));
+              cloudConfigExistsRef.current = true;
+            }
             await batch.commit();
+            cloudTxIdsRef.current = nextTxIds;
+            cloudEmpIdsRef.current = nextEmpIds;
+            setHasUnsyncedLocal(false);
             setSyncState('synced');
           } catch (error) {
             setSyncState('offline');
-            handleFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
+            logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
           }
         }
       },
@@ -817,6 +1005,40 @@ export default function App() {
   const openPrintPreview = (job: PrintJobMeta): void => {
     setPrintJob(job);
     setLastPrintSnapshot(job);
+  };
+
+  const handleQuickOfficeDownload = async (
+    format: 'excel' | 'word',
+    job: PrintJobMeta
+  ): Promise<void> => {
+    if (!job.items.length) {
+      showToast('Belum ada data pada periode ini untuk diekspor.');
+      return;
+    }
+    const key = `${job.type}-${format}`;
+    if (busyExport) return;
+    setBusyExport(key);
+    const ctx = {
+      category: appState.currentCategory,
+      month: appState.currentMonth,
+      officials: appState.officials,
+      customMainTitle: appState.customMainTitle,
+      customActivityTitle: appState.customActivityTitle,
+    };
+    try {
+      if (format === 'excel') {
+        await downloadExcelReport(job, ctx);
+        showToast('Laporan Excel (.xlsx) berhasil diunduh.');
+      } else {
+        await downloadWordReport(job, ctx);
+        showToast('Laporan Word (.docx) berhasil diunduh.');
+      }
+    } catch (err) {
+      console.error('Export gagal:', err);
+      showToast(`Gagal membuat laporan ${format === 'excel' ? 'Excel' : 'Word'}.`);
+    } finally {
+      setBusyExport(null);
+    }
   };
 
   const dhTargetList = useMemo(
@@ -845,12 +1067,20 @@ export default function App() {
 
   const activePrintTarget = printJob || lastPrintSnapshot;
 
+  const lastSavedTimeStr =
+    lastUpdatedAt > 0
+      ? new Date(lastUpdatedAt).toLocaleTimeString('id-ID', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      : '';
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
-      {/* Top Bar (3-zone compact header: Brand | Desktop Tabs | Primary Cloud Auth CTA) */}
+      {/* Top Bar */}
       <header className="sticky top-0 z-30 bg-slate-900 text-white border-b border-slate-800 no-print">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-3">
-          {/* Left: Brand */}
           <div className="flex items-center gap-2.5 min-w-0">
             <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center font-extrabold text-xs tracking-tight shrink-0">
               SRT39
@@ -863,7 +1093,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Center: Desktop Navigation */}
           <nav className="hidden lg:flex items-center gap-1" aria-label="Menu utama">
             {navItems.map((tab) => {
               const active = activeTab === tab.id;
@@ -871,7 +1100,7 @@ export default function App() {
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => setActiveTab(tab.id)}
+                  onClick={() => handleTabChange(tab.id)}
                   className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
                     active
                       ? 'bg-blue-600 text-white shadow-sm'
@@ -885,7 +1114,6 @@ export default function App() {
             })}
           </nav>
 
-          {/* Right: Cloud Auth CTA */}
           <div className="flex items-center gap-2 shrink-0">
             {!authReady ? null : user ? (
               <div className="flex items-center gap-2">
@@ -918,7 +1146,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Tablet secondary tab bar (md only; lg uses top bar, mobile uses bottom bar) */}
+        {/* Tablet secondary tab bar */}
         <div className="hidden md:flex lg:hidden border-t border-slate-800 px-4 py-2 gap-1.5 overflow-x-auto">
           {navItems.map((tab) => {
             const active = activeTab === tab.id;
@@ -926,7 +1154,7 @@ export default function App() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleTabChange(tab.id)}
                 className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
                   active ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'
                 }`}
@@ -942,7 +1170,6 @@ export default function App() {
       {/* Sub-header Workspace Filter Bar */}
       <div className="bg-white border-b border-slate-200 no-print">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 py-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
-          {/* Category Switcher */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 lg:pb-0">
             {(
               [
@@ -969,7 +1196,6 @@ export default function App() {
             })}
           </div>
 
-          {/* Month Filter + Clone + Auto-save Status */}
           <div className="flex flex-wrap items-center justify-between lg:justify-end gap-2.5">
             <div className="flex items-center gap-2 flex-1 sm:flex-initial">
               <select
@@ -999,12 +1225,13 @@ export default function App() {
               )}
             </div>
 
-            {/* Clean inline auto-save status (no pills, no pulsing dots) */}
-            <div className="flex items-center gap-1.5 text-xs text-slate-600">
+            <div className="flex items-center gap-2 text-xs text-slate-600">
               {syncState === 'synced' ? (
                 <>
                   <Cloud className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>Tersimpan otomatis di Cloud · Perangkat</span>
+                  <span>
+                    Tersimpan otomatis di Cloud{lastSavedTimeStr ? ` · ${lastSavedTimeStr}` : ''}
+                  </span>
                 </>
               ) : syncState === 'syncing' ? (
                 <>
@@ -1014,18 +1241,44 @@ export default function App() {
               ) : syncState === 'offline' ? (
                 <>
                   <CloudOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>Mode luring · Tersimpan otomatis di perangkat</span>
+                  <span>
+                    Tersimpan di perangkat (Cloud luring)
+                    {lastSavedTimeStr ? ` · ${lastSavedTimeStr}` : ''}
+                  </span>
                 </>
               ) : (
                 <>
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>Tersimpan otomatis di perangkat</span>
+                  <span>
+                    Tersimpan di perangkat{lastSavedTimeStr ? ` · ${lastSavedTimeStr}` : ''}
+                  </span>
                 </>
               )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Warning Banner if browser iframe restricts localStorage and user hasn't signed in to Cloud */}
+      {!initialBoot.localStorageWritable && !user && (
+        <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-6 py-2.5 no-print">
+          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-amber-900">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>
+                Browser ini membatasi penyimpanan lokal. Masuk dengan Google agar riwayat tersimpan permanen di Cloud saat halaman dimuat ulang.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap self-start sm:self-auto"
+            >
+              Aktifkan Sinkron Cloud
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 py-5 pb-24 md:pb-10 space-y-6 no-print">
@@ -1086,34 +1339,111 @@ export default function App() {
                 });
               }}
             />
+
+            {/* Riwayat Perubahan Tersimpan */}
+            <section className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowHistoryPanel((v) => !v)}
+                className="w-full px-4 sm:px-6 py-3.5 flex items-center justify-between text-left hover:bg-slate-50 transition"
+              >
+                <div className="flex items-center gap-2.5">
+                  <History className="w-4 h-4 text-slate-600 shrink-0" />
+                  <span className="text-sm font-bold text-slate-900">
+                    Riwayat Aktivitas Tersimpan ({historyLog.length})
+                  </span>
+                </div>
+                <span className="text-xs font-semibold text-blue-600">
+                  {showHistoryPanel ? 'Tutup' : 'Lihat Riwayat'}
+                </span>
+              </button>
+              {showHistoryPanel && (
+                <div className="border-t border-slate-100 divide-y divide-slate-100 max-h-72 overflow-y-auto">
+                  {historyLog.length === 0 ? (
+                    <div className="p-4 text-xs text-slate-500 text-center">
+                      Belum ada catatan perubahan baru. Setiap perubahan akan tercatat otomatis di sini.
+                    </div>
+                  ) : (
+                    historyLog.map((h) => (
+                      <div key={h.id} className="px-4 sm:px-6 py-2.5 flex items-center justify-between gap-3 text-xs">
+                        <div className="min-w-0">
+                          <span className="font-bold text-slate-900">{h.action}</span>
+                          <span className="text-slate-600"> · {h.detail}</span>
+                        </div>
+                        <span className="font-mono-num text-slate-400 shrink-0">
+                          {new Date(h.timestamp).toLocaleString('id-ID', {
+                            day: '2-digit',
+                            month: 'short',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </section>
           </div>
         )}
 
         {activeTab === 'rekap' && (
           <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
               <div>
                 <h2 className="text-sm sm:text-base font-bold text-slate-900">
                   Rekapitulasi Bulanan ({filteredTransactions.length} Entri)
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Format Resmi A4 Landscape · Siap unduh PDF atau cetak langsung
+                  Format Resmi A4 Landscape · Unduh PDF, Excel (.xlsx), Word (.docx), atau Cetak
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() =>
-                  openPrintPreview({
-                    docName: `Rekapitulasi_Honor_${appState.currentMonth}_2026`,
-                    type: 'rekap',
-                    items: filteredTransactions,
-                  })
-                }
-                className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold flex items-center justify-center gap-2 transition"
-              >
-                <Printer className="w-4 h-4" />
-                Cetak / Unduh PDF Rekap
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busyExport !== null}
+                  onClick={() =>
+                    handleQuickOfficeDownload('excel', {
+                      docName: `Rekapitulasi_Honor_${appState.currentMonth}_2026`,
+                      type: 'rekap',
+                      items: filteredTransactions,
+                    })
+                  }
+                  className="flex-1 sm:flex-none min-h-[44px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  {busyExport === 'rekap-excel' ? 'Membuat...' : 'Excel (.xlsx)'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busyExport !== null}
+                  onClick={() =>
+                    handleQuickOfficeDownload('word', {
+                      docName: `Rekapitulasi_Honor_${appState.currentMonth}_2026`,
+                      type: 'rekap',
+                      items: filteredTransactions,
+                    })
+                  }
+                  className="flex-1 sm:flex-none min-h-[44px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition"
+                >
+                  <FileText className="w-4 h-4" />
+                  {busyExport === 'rekap-word' ? 'Membuat...' : 'Word (.docx)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    openPrintPreview({
+                      docName: `Rekapitulasi_Honor_${appState.currentMonth}_2026`,
+                      type: 'rekap',
+                      items: filteredTransactions,
+                    })
+                  }
+                  className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition"
+                >
+                  <Printer className="w-4 h-4" />
+                  Cetak / PDF
+                </button>
+              </div>
             </div>
             <ResponsiveSheetFrame>
               <RekapSheet
@@ -1130,7 +1460,7 @@ export default function App() {
 
         {activeTab === 'dh' && (
           <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <label className="block text-xs font-semibold text-slate-600 mb-1">
                   Pilih Lembar Daftar Hadir
@@ -1148,27 +1478,65 @@ export default function App() {
                   ))}
                 </select>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!dhTargetList.length) {
-                    showToast('Tidak ada data Daftar Hadir pada filter ini.');
-                    return;
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={busyExport !== null}
+                  onClick={() =>
+                    handleQuickOfficeDownload('excel', {
+                      docName:
+                        dhFilterId === 'ALL'
+                          ? `Semua_Daftar_Hadir_${appState.currentMonth}_2026`
+                          : `Daftar_Hadir_${dhTargetList[0]?.nama.replace(/\s+/g, '_') || 'Dokumen'}`,
+                      type: 'dh',
+                      items: dhTargetList,
+                    })
                   }
-                  openPrintPreview({
-                    docName:
-                      dhFilterId === 'ALL'
-                        ? `Semua_Daftar_Hadir_${appState.currentMonth}_2026`
-                        : `Daftar_Hadir_${dhTargetList[0].nama.replace(/\s+/g, '_')}`,
-                    type: 'dh',
-                    items: dhTargetList,
-                  });
-                }}
-                className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold flex items-center justify-center gap-2 shrink-0 transition"
-              >
-                <Printer className="w-4 h-4" />
-                Cetak / Unduh PDF Daftar Hadir
-              </button>
+                  className="flex-1 sm:flex-none min-h-[44px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  {busyExport === 'dh-excel' ? 'Membuat...' : 'Excel (.xlsx)'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busyExport !== null}
+                  onClick={() =>
+                    handleQuickOfficeDownload('word', {
+                      docName:
+                        dhFilterId === 'ALL'
+                          ? `Semua_Daftar_Hadir_${appState.currentMonth}_2026`
+                          : `Daftar_Hadir_${dhTargetList[0]?.nama.replace(/\s+/g, '_') || 'Dokumen'}`,
+                      type: 'dh',
+                      items: dhTargetList,
+                    })
+                  }
+                  className="flex-1 sm:flex-none min-h-[44px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition"
+                >
+                  <FileText className="w-4 h-4" />
+                  {busyExport === 'dh-word' ? 'Membuat...' : 'Word (.docx)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!dhTargetList.length) {
+                      showToast('Tidak ada data Daftar Hadir pada filter ini.');
+                      return;
+                    }
+                    openPrintPreview({
+                      docName:
+                        dhFilterId === 'ALL'
+                          ? `Semua_Daftar_Hadir_${appState.currentMonth}_2026`
+                          : `Daftar_Hadir_${dhTargetList[0].nama.replace(/\s+/g, '_')}`,
+                      type: 'dh',
+                      items: dhTargetList,
+                    });
+                  }}
+                  className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition"
+                >
+                  <Printer className="w-4 h-4" />
+                  Cetak / PDF
+                </button>
+              </div>
             </div>
 
             {dhTargetList.length === 0 ? (
@@ -1196,7 +1564,7 @@ export default function App() {
 
         {activeTab === 'tt' && (
           <div className="space-y-4">
-            <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
               <div className="flex-1 min-w-0">
                 <label className="block text-xs font-semibold text-slate-600 mb-1">
                   Pilih Lembar Tanda Terima SPJ
@@ -1214,27 +1582,65 @@ export default function App() {
                   ))}
                 </select>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!ttTargetList.length) {
-                    showToast('Tidak ada data Tanda Terima SPJ pada filter ini.');
-                    return;
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={busyExport !== null}
+                  onClick={() =>
+                    handleQuickOfficeDownload('excel', {
+                      docName:
+                        ttFilterId === 'ALL'
+                          ? `Semua_Tanda_Terima_${appState.currentMonth}_2026`
+                          : `Tanda_Terima_${ttTargetList[0]?.nama.replace(/\s+/g, '_') || 'Dokumen'}`,
+                      type: 'tt',
+                      items: ttTargetList,
+                    })
                   }
-                  openPrintPreview({
-                    docName:
-                      ttFilterId === 'ALL'
-                        ? `Semua_Tanda_Terima_${appState.currentMonth}_2026`
-                        : `Tanda_Terima_${ttTargetList[0].nama.replace(/\s+/g, '_')}`,
-                    type: 'tt',
-                    items: ttTargetList,
-                  });
-                }}
-                className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold flex items-center justify-center gap-2 shrink-0 transition"
-              >
-                <Printer className="w-4 h-4" />
-                Cetak / Unduh PDF Tanda Terima
-              </button>
+                  className="flex-1 sm:flex-none min-h-[44px] px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  {busyExport === 'tt-excel' ? 'Membuat...' : 'Excel (.xlsx)'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busyExport !== null}
+                  onClick={() =>
+                    handleQuickOfficeDownload('word', {
+                      docName:
+                        ttFilterId === 'ALL'
+                          ? `Semua_Tanda_Terima_${appState.currentMonth}_2026`
+                          : `Tanda_Terima_${ttTargetList[0]?.nama.replace(/\s+/g, '_') || 'Dokumen'}`,
+                      type: 'tt',
+                      items: ttTargetList,
+                    })
+                  }
+                  className="flex-1 sm:flex-none min-h-[44px] px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap transition"
+                >
+                  <FileText className="w-4 h-4" />
+                  {busyExport === 'tt-word' ? 'Membuat...' : 'Word (.docx)'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!ttTargetList.length) {
+                      showToast('Tidak ada data Tanda Terima SPJ pada filter ini.');
+                      return;
+                    }
+                    openPrintPreview({
+                      docName:
+                        ttFilterId === 'ALL'
+                          ? `Semua_Tanda_Terima_${appState.currentMonth}_2026`
+                          : `Tanda_Terima_${ttTargetList[0].nama.replace(/\s+/g, '_')}`,
+                      type: 'tt',
+                      items: ttTargetList,
+                    });
+                  }}
+                  className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 whitespace-nowrap transition"
+                >
+                  <Printer className="w-4 h-4" />
+                  Cetak / PDF
+                </button>
+              </div>
             </div>
 
             {ttTargetList.length === 0 ? (
@@ -1276,7 +1682,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Mobile Bottom Navigation Bar (Thumb-zone ergonomic tabs) */}
+      {/* Mobile Bottom Navigation Bar */}
       <nav
         className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-white/95 backdrop-blur border-t border-slate-200 pb-safe no-print"
         aria-label="Navigasi seluler"
@@ -1288,7 +1694,7 @@ export default function App() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => handleTabChange(tab.id)}
                 className={`min-h-[56px] py-1.5 px-1 flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition ${
                   active ? 'text-blue-600' : 'text-slate-500 hover:text-slate-800'
                 }`}

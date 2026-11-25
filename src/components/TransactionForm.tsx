@@ -1,8 +1,56 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Plus, RotateCcw, UserPlus } from 'lucide-react';
 import { MONTHS, MONTH_ROMAN } from '../data/seedData';
 import { CategoryType, MasterEmployee, Transaction } from '../types';
 import { formatRupiah } from '../utils/formatters';
+
+const DRAFT_STORAGE_KEY = 'srt39_form_draft_v1';
+
+interface FormDraft {
+  category: CategoryType;
+  selectedMasterId: string;
+  bulan: string;
+  noBukti: string;
+  tanggal: string;
+  nama: string;
+  jenjang: string;
+  jenis: string;
+  status: string;
+  jabatan: string;
+  tarif: number;
+  jamlat: number;
+  pajakRate: number;
+  customRangka: string;
+}
+
+function loadDraft(cat: CategoryType): FormDraft | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY) || sessionStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as FormDraft;
+    if (parsed && parsed.category === cat && (parsed.nama || parsed.jenis)) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveDraft(draft: FormDraft | null): void {
+  try {
+    if (!draft) {
+      localStorage.removeItem(DRAFT_STORAGE_KEY);
+      sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+      return;
+    }
+    const str = JSON.stringify(draft);
+    localStorage.setItem(DRAFT_STORAGE_KEY, str);
+    sessionStorage.setItem(DRAFT_STORAGE_KEY, str);
+  } catch {
+    // ignore storage errors
+  }
+}
 
 interface TransactionFormProps {
   currentCategory: CategoryType;
@@ -49,21 +97,41 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
         ? 'Narasumber'
         : 'Guru Ekstrakurikuler';
 
-  const [selectedMasterId, setSelectedMasterId] = useState<string>('MANUAL');
-  const [bulan, setBulan] = useState<string>(activeMonthDefault);
-  const [noBukti, setNoBukti] = useState<string>(() => suggestNoBukti(activeMonthDefault, currentCategory));
-  const [tanggal, setTanggal] = useState<string>(`25 ${activeMonthDefault} 2026`);
-  const [nama, setNama] = useState<string>('');
-  const [jenjang, setJenjang] = useState<string>(currentCategory === 'lainnya' ? 'SRT 39 GARUT' : 'SRMP');
-  const [jenis, setJenis] = useState<string>('');
-  const [status, setStatus] = useState<string>(currentCategory === 'gurutamu' ? 'ASN' : 'NON ASN');
-  const [jabatan, setJabatan] = useState<string>(defaultJabatan);
-  const [tarif, setTarif] = useState<number>(defaultTarif);
-  const [jamlat, setJamlat] = useState<number>(1);
-  const [pajakRate, setPajakRate] = useState<number>(defaultPajak);
-  const [customRangka, setCustomRangka] = useState<string>(customActivityTitle);
+  const initialDraft = !editingTx ? loadDraft(currentCategory) : null;
+
+  const [selectedMasterId, setSelectedMasterId] = useState<string>(initialDraft?.selectedMasterId || 'MANUAL');
+  const [bulan, setBulan] = useState<string>(initialDraft?.bulan || activeMonthDefault);
+  const [noBukti, setNoBukti] = useState<string>(
+    () => initialDraft?.noBukti || suggestNoBukti(activeMonthDefault, currentCategory)
+  );
+  const [tanggal, setTanggal] = useState<string>(initialDraft?.tanggal || `25 ${activeMonthDefault} 2026`);
+  const [nama, setNama] = useState<string>(initialDraft?.nama || '');
+  const [jenjang, setJenjang] = useState<string>(
+    initialDraft?.jenjang || (currentCategory === 'lainnya' ? 'SRT 39 GARUT' : 'SRMP')
+  );
+  const [jenis, setJenis] = useState<string>(initialDraft?.jenis || '');
+  const [status, setStatus] = useState<string>(
+    initialDraft?.status || (currentCategory === 'gurutamu' ? 'ASN' : 'NON ASN')
+  );
+  const [jabatan, setJabatan] = useState<string>(initialDraft?.jabatan || defaultJabatan);
+  const [tarif, setTarif] = useState<number>(initialDraft?.tarif ?? defaultTarif);
+  const [jamlat, setJamlat] = useState<number>(initialDraft?.jamlat ?? 1);
+  const [pajakRate, setPajakRate] = useState<number>(initialDraft?.pajakRate ?? defaultPajak);
+  const [customRangka, setCustomRangka] = useState<string>(initialDraft?.customRangka || customActivityTitle);
+
+  const prevCatRef = useRef<CategoryType>(currentCategory);
+  const prevMonthRef = useRef<string>(currentMonth);
+  const prevEditingIdRef = useRef<string | null>(editingTx?.id ?? null);
 
   useEffect(() => {
+    const editingChanged = prevEditingIdRef.current !== (editingTx?.id ?? null);
+    const catChanged = prevCatRef.current !== currentCategory;
+    const monthChanged = prevMonthRef.current !== currentMonth;
+
+    prevEditingIdRef.current = editingTx?.id ?? null;
+    prevCatRef.current = currentCategory;
+    prevMonthRef.current = currentMonth;
+
     if (editingTx) {
       setSelectedMasterId('MANUAL');
       setBulan(editingTx.bulan);
@@ -78,24 +146,85 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
       setJamlat(editingTx.jamlat);
       setPajakRate(editingTx.pajakRate);
       setCustomRangka(editingTx.customRangka || customActivityTitle);
-    } else {
-      const m = currentMonth === 'ALL' ? 'November' : currentMonth;
-      setSelectedMasterId('MANUAL');
-      setBulan(m);
-      setNoBukti(suggestNoBukti(m, currentCategory));
-      setTanggal(`25 ${m} 2026`);
-      setNama('');
-      setJenjang(currentCategory === 'lainnya' ? 'SRT 39 GARUT' : 'SRMP');
-      setJenis('');
-      setStatus(currentCategory === 'gurutamu' ? 'ASN' : 'NON ASN');
-      setJabatan(defaultJabatan);
-      setTarif(defaultTarif);
-      setJamlat(1);
-      setPajakRate(defaultPajak);
-      setCustomRangka(customActivityTitle);
+      return;
+    }
+
+    if (editingChanged || catChanged || monthChanged) {
+      const draft = loadDraft(currentCategory);
+      if (draft && !catChanged && !monthChanged) {
+        setSelectedMasterId(draft.selectedMasterId);
+        setBulan(draft.bulan);
+        setNoBukti(draft.noBukti);
+        setTanggal(draft.tanggal);
+        setNama(draft.nama);
+        setJenjang(draft.jenjang);
+        setJenis(draft.jenis);
+        setStatus(draft.status);
+        setJabatan(draft.jabatan);
+        setTarif(draft.tarif);
+        setJamlat(draft.jamlat);
+        setPajakRate(draft.pajakRate);
+        setCustomRangka(draft.customRangka);
+      } else {
+        const m = currentMonth === 'ALL' ? 'November' : currentMonth;
+        setSelectedMasterId('MANUAL');
+        setBulan(m);
+        setNoBukti(suggestNoBukti(m, currentCategory));
+        setTanggal(`25 ${m} 2026`);
+        setNama('');
+        setJenjang(currentCategory === 'lainnya' ? 'SRT 39 GARUT' : 'SRMP');
+        setJenis('');
+        setStatus(currentCategory === 'gurutamu' ? 'ASN' : 'NON ASN');
+        setJabatan(defaultJabatan);
+        setTarif(defaultTarif);
+        setJamlat(1);
+        setPajakRate(defaultPajak);
+        setCustomRangka(customActivityTitle);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingTx, currentCategory, currentMonth]);
+
+  // Persist unsubmitted form draft automatically across refresh/reload
+  useEffect(() => {
+    if (editingTx) return;
+    if (!nama.trim() && !jenis.trim()) {
+      saveDraft(null);
+      return;
+    }
+    saveDraft({
+      category: currentCategory,
+      selectedMasterId,
+      bulan,
+      noBukti,
+      tanggal,
+      nama,
+      jenjang,
+      jenis,
+      status,
+      jabatan,
+      tarif,
+      jamlat,
+      pajakRate,
+      customRangka,
+    });
+  }, [
+    editingTx,
+    currentCategory,
+    selectedMasterId,
+    bulan,
+    noBukti,
+    tanggal,
+    nama,
+    jenjang,
+    jenis,
+    status,
+    jabatan,
+    tarif,
+    jamlat,
+    pajakRate,
+    customRangka,
+  ]);
 
   const handleSelectMaster = (empId: string): void => {
     setSelectedMasterId(empId);
@@ -151,6 +280,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
     onSubmitTx(tx, Boolean(editingTx));
 
     if (!editingTx) {
+      saveDraft(null);
       setSelectedMasterId('MANUAL');
       setNama('');
       setJenis('');
@@ -170,7 +300,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
               {editingTx ? `Edit SPJ: ${editingTx.nama}` : 'Tambah Entri SPJ Baru'}
             </h2>
             <p className="text-xs text-slate-500">
-              Pilih pegawai master atau ketik manual · Perubahan tersimpan otomatis
+              Pilih pegawai master atau ketik manual · Draf & riwayat tersimpan otomatis
             </p>
           </div>
         </div>
