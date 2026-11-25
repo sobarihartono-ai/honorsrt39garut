@@ -79,7 +79,7 @@ export const MasterView: React.FC<MasterViewProps> = ({
     e.preventDefault();
     if (!empNama.trim() || !empJenis.trim()) return;
     const emp: MasterEmployee = {
-      id: `emp-${Date.now()}`,
+      id: `emp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       category: empCategory,
       nama: empNama.trim(),
       jenis: empJenis.trim(),
@@ -134,7 +134,6 @@ export const MasterView: React.FC<MasterViewProps> = ({
                 <label className="block text-xs text-slate-600 mb-1">NIP PPK</label>
                 <input
                   type="text"
-                  required
                   value={ppkNip}
                   onChange={(e) => setPpkNip(e.target.value)}
                   className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm font-mono-num text-slate-900"
@@ -158,7 +157,6 @@ export const MasterView: React.FC<MasterViewProps> = ({
                 <label className="block text-xs text-slate-600 mb-1">NIP Bendahara</label>
                 <input
                   type="text"
-                  required
                   value={bendNip}
                   onChange={(e) => setBendNip(e.target.value)}
                   className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm font-mono-num text-slate-900"
@@ -182,7 +180,6 @@ export const MasterView: React.FC<MasterViewProps> = ({
                 <label className="block text-xs text-slate-600 mb-1">NIP Kepala Sekolah</label>
                 <input
                   type="text"
-                  required
                   value={kepsekNip}
                   onChange={(e) => setKepsekNip(e.target.value)}
                   className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm font-mono-num text-slate-900"

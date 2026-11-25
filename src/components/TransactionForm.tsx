@@ -261,7 +261,9 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
     if (!nama.trim() || !jenis.trim() || !noBukti.trim() || !tanggal.trim()) return;
 
     const tx: Transaction = {
-      id: editingTx ? editingTx.id : `tx-${Date.now()}`,
+      id: editingTx
+        ? editingTx.id
+        : `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       category: editingTx ? editingTx.category : currentCategory,
       bulan,
       noBukti: noBukti.trim(),
@@ -445,7 +447,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
               <input
                 type="number"
                 min={0}
-                step={1000}
+                step="any"
                 required
                 value={tarif}
                 onChange={(e) => setTarif(Number(e.target.value))}

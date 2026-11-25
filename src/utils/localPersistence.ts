@@ -14,12 +14,59 @@ const IDB_NAME = 'srt39_honor_db_v1';
 const IDB_STORE = 'kv';
 const IDB_KEY = 'workspace_snapshot';
 
+export interface PendingCloudMutations {
+  dirtyTxIds: string[];
+  deletedTxIds: string[];
+  dirtyEmpIds: string[];
+  deletedEmpIds: string[];
+  dirtySettings: boolean;
+}
+
+export const EMPTY_PENDING_MUTATIONS: PendingCloudMutations = {
+  dirtyTxIds: [],
+  deletedTxIds: [],
+  dirtyEmpIds: [],
+  deletedEmpIds: [],
+  dirtySettings: false,
+};
+
 export interface PersistedEnvelope {
   state: AppState;
   activeTab: TabType;
   historyLog: HistoryEntry[];
   hasUnsyncedLocalChanges: boolean;
+  pendingMutations: PendingCloudMutations;
   updatedAt: number;
+}
+
+export interface SyncWriteResult {
+  localStorageOk: boolean;
+  sessionStorageOk: boolean;
+  windowNameOk: boolean;
+}
+
+function normalizePendingMutations(raw: unknown): PendingCloudMutations {
+  if (!raw || typeof raw !== 'object') return { ...EMPTY_PENDING_MUTATIONS };
+  const obj = raw as Record<string, unknown>;
+  const strArr = (v: unknown) =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.length > 0) : [];
+  return {
+    dirtyTxIds: strArr(obj.dirtyTxIds),
+    deletedTxIds: strArr(obj.deletedTxIds),
+    dirtyEmpIds: strArr(obj.dirtyEmpIds),
+    deletedEmpIds: strArr(obj.deletedEmpIds),
+    dirtySettings: Boolean(obj.dirtySettings),
+  };
+}
+
+export function hasAnyPendingMutation(m: PendingCloudMutations): boolean {
+  return (
+    m.dirtyTxIds.length > 0 ||
+    m.deletedTxIds.length > 0 ||
+    m.dirtyEmpIds.length > 0 ||
+    m.deletedEmpIds.length > 0 ||
+    m.dirtySettings
+  );
 }
 
 export function normalizeAppState(raw?: Partial<AppState> | null): AppState {
@@ -59,11 +106,14 @@ function normalizeEnvelope(parsed: unknown): PersistedEnvelope | null {
       tab === 'kelola' || tab === 'rekap' || tab === 'dh' || tab === 'tt' || tab === 'master'
         ? tab
         : 'kelola';
+    const pendingMutations = normalizePendingMutations(obj.pendingMutations);
     return {
       state: normalizeAppState(obj.state as Partial<AppState>),
       activeTab: validTab,
       historyLog: Array.isArray(obj.historyLog) ? (obj.historyLog as HistoryEntry[]).slice(0, 60) : [],
-      hasUnsyncedLocalChanges: Boolean(obj.hasUnsyncedLocalChanges),
+      hasUnsyncedLocalChanges:
+        Boolean(obj.hasUnsyncedLocalChanges) || hasAnyPendingMutation(pendingMutations),
+      pendingMutations,
       updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : Date.now(),
     };
   }
@@ -74,6 +124,7 @@ function normalizeEnvelope(parsed: unknown): PersistedEnvelope | null {
       activeTab: 'kelola',
       historyLog: [],
       hasUnsyncedLocalChanges: false,
+      pendingMutations: { ...EMPTY_PENDING_MUTATIONS },
       updatedAt: Date.now(),
     };
   }
@@ -81,10 +132,22 @@ function normalizeEnvelope(parsed: unknown): PersistedEnvelope | null {
   return null;
 }
 
+function tryReadJsonStorage(storage: Storage | undefined): PersistedEnvelope | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return normalizeEnvelope(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
 export function loadInitialEnvelope(): {
   envelope: PersistedEnvelope;
   fromStorage: boolean;
   localStorageWritable: boolean;
+  sessionStorageWritable: boolean;
 } {
   let lsWritable = false;
   try {
@@ -96,38 +159,44 @@ export function loadInitialEnvelope(): {
     lsWritable = false;
   }
 
-  let lsEnv: PersistedEnvelope | null = null;
+  let ssWritable = false;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      lsEnv = normalizeEnvelope(JSON.parse(raw));
-    }
+    const testKey = '__srt39_test__';
+    sessionStorage.setItem(testKey, '1');
+    sessionStorage.removeItem(testKey);
+    ssWritable = true;
   } catch {
-    lsEnv = null;
+    ssWritable = false;
   }
 
-  let wnEnv: PersistedEnvelope | null = null;
+  const candidates: PersistedEnvelope[] = [];
+
+  const lsEnv = tryReadJsonStorage(typeof localStorage !== 'undefined' ? localStorage : undefined);
+  if (lsEnv) candidates.push(lsEnv);
+
+  const ssEnv = tryReadJsonStorage(
+    typeof sessionStorage !== 'undefined' ? sessionStorage : undefined
+  );
+  if (ssEnv) candidates.push(ssEnv);
+
   try {
     if (typeof window !== 'undefined' && window.name.startsWith(WINDOW_NAME_PREFIX)) {
       const jsonStr = window.name.slice(WINDOW_NAME_PREFIX.length);
-      wnEnv = normalizeEnvelope(JSON.parse(jsonStr));
+      const wnEnv = normalizeEnvelope(JSON.parse(jsonStr));
+      if (wnEnv) candidates.push(wnEnv);
     }
   } catch {
-    wnEnv = null;
+    // ignore invalid window.name
   }
 
-  if (lsEnv && wnEnv) {
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.updatedAt - a.updatedAt);
     return {
-      envelope: wnEnv.updatedAt > lsEnv.updatedAt ? wnEnv : lsEnv,
+      envelope: candidates[0],
       fromStorage: true,
       localStorageWritable: lsWritable,
+      sessionStorageWritable: ssWritable,
     };
-  }
-  if (lsEnv) {
-    return { envelope: lsEnv, fromStorage: true, localStorageWritable: lsWritable };
-  }
-  if (wnEnv) {
-    return { envelope: wnEnv, fromStorage: true, localStorageWritable: lsWritable };
   }
 
   return {
@@ -136,10 +205,12 @@ export function loadInitialEnvelope(): {
       activeTab: 'kelola',
       historyLog: [],
       hasUnsyncedLocalChanges: false,
+      pendingMutations: { ...EMPTY_PENDING_MUTATIONS },
       updatedAt: 0,
     },
     fromStorage: false,
     localStorageWritable: lsWritable,
+    sessionStorageWritable: ssWritable,
   };
 }
 
@@ -193,20 +264,34 @@ export async function writeIndexedDbEnvelope(envelope: PersistedEnvelope): Promi
   }
 }
 
-export function saveEnvelopeSync(envelope: PersistedEnvelope): void {
+export function saveEnvelopeSync(envelope: PersistedEnvelope): SyncWriteResult {
   const serialized = JSON.stringify(envelope);
+  let localStorageOk = false;
+  let sessionStorageOk = false;
+  let windowNameOk = false;
 
   try {
     localStorage.setItem(STORAGE_KEY, serialized);
-  } catch (err) {
-    console.warn('localStorage write failed:', err);
+    localStorageOk = true;
+  } catch {
+    localStorageOk = false;
+  }
+
+  try {
+    sessionStorage.setItem(STORAGE_KEY, serialized);
+    sessionStorageOk = true;
+  } catch {
+    sessionStorageOk = false;
   }
 
   try {
     if (typeof window !== 'undefined') {
       window.name = WINDOW_NAME_PREFIX + serialized;
+      windowNameOk = true;
     }
   } catch {
-    // ignore window.name failure
+    windowNameOk = false;
   }
+
+  return { localStorageOk, sessionStorageOk, windowNameOk };
 }
