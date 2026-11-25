@@ -1,38 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FirebaseError } from 'firebase/app';
-import { User, onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import {
-  DocumentData,
-  DocumentReference,
-  collection,
-  deleteDoc,
-  doc,
-  getDoc,
-  getDocFromServer,
-  getDocs,
-  getDocsFromServer,
-  onSnapshot,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-  writeBatch,
-} from 'firebase/firestore';
+import { User, onAuthStateChanged } from 'firebase/auth';
 import {
   AlertTriangle,
   CheckCircle2,
   Cloud,
   CloudOff,
   Copy,
-  ExternalLink,
   FileCheck2,
   FileSpreadsheet,
   FileText,
   History,
-  LogIn,
-  LogOut,
   Printer,
   RefreshCw,
   Settings2,
@@ -53,21 +31,11 @@ import {
   DEFAULT_APP_STATE,
   DEFAULT_CUSTOM_ACTIVITY_TITLE,
   DEFAULT_CUSTOM_MAIN_TITLE,
-  DEFAULT_MASTER_EMPLOYEES,
   DEFAULT_OFFICIALS,
   MONTHS,
   MONTH_ROMAN,
 } from './data/seedData';
-import {
-  OperationType,
-  auth,
-  authPersistenceReady,
-  db,
-  firebaseProjectId,
-  googleProvider,
-  handleFirestoreError,
-  testConnection,
-} from './firebase';
+import { auth, authPersistenceReady, ensureAnonymousSession } from './firebase';
 import {
   AppState,
   CategoryType,
@@ -78,7 +46,7 @@ import {
   TabType,
   Transaction,
 } from './types';
-import { clampStr, sanitizeFirestoreId } from './utils/formatters';
+import { sanitizeFirestoreId } from './utils/formatters';
 import {
   EMPTY_PENDING_MUTATIONS,
   PendingCloudMutations,
@@ -94,96 +62,6 @@ import { downloadExcelReport, downloadWordReport } from './utils/officeGenerator
 
 function sanitizeCategory(cat: unknown): CategoryType {
   return cat === 'ekskul' || cat === 'gurutamu' || cat === 'lainnya' ? cat : 'ekskul';
-}
-
-function safeFiniteNumber(val: unknown, fallback: number, min: number, max: number): number {
-  const n = Number(val);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
-}
-
-function buildTxPayload(tx: Transaction, uid: string, isCreate: boolean) {
-  const base = {
-    category: sanitizeCategory(tx.category),
-    bulan: clampStr(tx.bulan || 'November', 30) || 'November',
-    noBukti: clampStr(tx.noBukti || 'REG/001/2026', 80) || 'REG/001/2026',
-    tanggal: clampStr(tx.tanggal || '1 November 2026', 60) || '1 November 2026',
-    nama: clampStr(tx.nama || '-', 120) || '-',
-    jenjang: clampStr(tx.jenjang || 'SRMP', 40) || 'SRMP',
-    jenis: clampStr(tx.jenis || '-', 100) || '-',
-    status: clampStr(tx.status || 'NON ASN', 60) || 'NON ASN',
-    jabatan: clampStr(tx.jabatan || 'Pembina', 100) || 'Pembina',
-    tarif: safeFiniteNumber(tx.tarif, 0, 0, 100000000),
-    jamlat: Math.round(safeFiniteNumber(tx.jamlat, 1, 1, 1000)),
-    pajakRate: safeFiniteNumber(tx.pajakRate, 0, 0, 1),
-    customRangka: clampStr(tx.customRangka ?? '', 250),
-    updatedAt: serverTimestamp(),
-  };
-
-  if (isCreate) {
-    return {
-      ...base,
-      ownerId: uid,
-      createdAt: serverTimestamp(),
-    };
-  }
-  return base;
-}
-
-function buildEmployeePayload(emp: MasterEmployee, uid: string, isCreate: boolean) {
-  const base = {
-    category: sanitizeCategory(emp.category),
-    nama: clampStr(emp.nama || '-', 120) || '-',
-    jenis: clampStr(emp.jenis || '-', 100) || '-',
-    jenjang: clampStr(emp.jenjang || 'SRMP', 40) || 'SRMP',
-    status: clampStr(emp.status || 'NON ASN', 60) || 'NON ASN',
-    jabatan: clampStr(emp.jabatan || 'Pembina', 100) || 'Pembina',
-    tarif: safeFiniteNumber(emp.tarif, 0, 0, 100000000),
-    pajakRate: safeFiniteNumber(emp.pajakRate, 0, 0, 1),
-    updatedAt: serverTimestamp(),
-  };
-
-  if (isCreate) {
-    return {
-      ...base,
-      ownerId: uid,
-      createdAt: serverTimestamp(),
-    };
-  }
-  return base;
-}
-
-function buildSettingsPayload(state: AppState, uid: string, isCreate: boolean) {
-  const base = {
-    ppkName: clampStr(state.officials.ppkName, 120),
-    ppkNip: clampStr(state.officials.ppkNip, 60),
-    bendName: clampStr(state.officials.bendName, 120),
-    bendNip: clampStr(state.officials.bendNip, 60),
-    kepsekName: clampStr(state.officials.kepsekName, 120),
-    kepsekNip: clampStr(state.officials.kepsekNip, 60),
-    customMainTitle: clampStr(state.customMainTitle, 200),
-    customActivityTitle: clampStr(state.customActivityTitle, 250),
-    currentMonth: clampStr(state.currentMonth || 'November', 30) || 'November',
-    currentCategory: sanitizeCategory(state.currentCategory),
-    updatedAt: serverTimestamp(),
-  };
-  if (isCreate) {
-    return {
-      ...base,
-      ownerId: uid,
-    };
-  }
-  return base;
-}
-
-function buildHistoryPayload(entry: HistoryEntry, uid: string) {
-  return {
-    ownerId: uid,
-    action: clampStr(entry.action || 'Aktivitas', 80) || 'Aktivitas',
-    detail: clampStr(entry.detail ?? '', 300),
-    timestamp: safeFiniteNumber(entry.timestamp, Date.now(), 0, Number.MAX_SAFE_INTEGER),
-    createdAt: serverTimestamp(),
-  };
 }
 
 function mergeRemoteTransactions(
@@ -267,90 +145,51 @@ function mergeHistoryLists(
     .slice(0, 50);
 }
 
-function logAndCaptureFirestoreError(error: unknown, op: OperationType, path: string | null): void {
-  try {
-    handleFirestoreError(error, op, path);
-  } catch {
-    // Error sudah dicatat ke console dalam format FirestoreErrorInfo
-  }
+interface WorkspaceApiResponse {
+  state: AppState;
+  historyLog: HistoryEntry[];
 }
 
-type BatchOp =
-  | { kind: 'set'; ref: DocumentReference<DocumentData>; data: DocumentData }
-  | { kind: 'update'; ref: DocumentReference<DocumentData>; data: DocumentData }
-  | { kind: 'delete'; ref: DocumentReference<DocumentData> };
+async function apiRequest<T = { ok: boolean }>(
+  path: string,
+  options: RequestInit = {},
+  targetUser?: User | null
+): Promise<T> {
+  const activeUser = targetUser || auth.currentUser || (await ensureAnonymousSession());
+  if (!activeUser) {
+    throw new Error('Sesi sinkronisasi otomatis belum siap.');
+  }
 
-async function commitBatchChunks(ops: BatchOp[]): Promise<void> {
-  const CHUNK_SIZE = 350;
-  for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
-    const chunk = ops.slice(i, i + CHUNK_SIZE);
-    const batch = writeBatch(db);
-    chunk.forEach((op) => {
-      if (op.kind === 'set') batch.set(op.ref, op.data);
-      else if (op.kind === 'update') batch.update(op.ref, op.data);
-      else batch.delete(op.ref);
+  const doFetch = async (forceRefresh: boolean) => {
+    const token = await activeUser.getIdToken(forceRefresh);
+    const headers = new Headers(options.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    if (options.body && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+    return fetch(path, {
+      ...options,
+      headers,
     });
-    await batch.commit();
-  }
-}
+  };
 
-async function upsertDocSafe(
-  ref: DocumentReference<DocumentData>,
-  createData: DocumentData,
-  updateData: DocumentData,
-  knownExists: boolean
-): Promise<void> {
-  if (knownExists) {
-    try {
-      await updateDoc(ref, updateData);
-      return;
-    } catch (err) {
-      const code = err instanceof FirebaseError ? err.code : '';
-      if (code === 'not-found' || (err instanceof Error && err.message.includes('No document to update'))) {
-        await setDoc(ref, createData);
-        return;
-      }
-      throw err;
-    }
-  } else {
-    try {
-      await setDoc(ref, createData);
-      return;
-    } catch (err) {
-      const code = err instanceof FirebaseError ? err.code : '';
-      if (code === 'permission-denied') {
-        const snap = await getDocFromServer(ref).catch(() => getDoc(ref));
-        if (snap.exists()) {
-          await updateDoc(ref, updateData);
-          return;
-        }
-      }
-      throw err;
-    }
+  let res = await doFetch(false);
+  if (res.status === 401) {
+    res = await doFetch(true);
   }
-}
 
-function formatFirebaseAuthError(err: unknown): string {
-  const code = err instanceof FirebaseError ? err.code : '';
-  if (code === 'auth/popup-blocked') {
-    return 'Pop-up login Google diblokir oleh browser di komputer ini. Izinkan pop-up di bilah alamat browser lalu klik Masuk Google lagi.';
+  if (!res.ok) {
+    let errMsg = 'Gagal terhubung ke server sinkronisasi.';
+    try {
+      const parsed = (await res.json()) as { error?: string };
+      if (parsed?.error) errMsg = parsed.error;
+    } catch {
+      // keep default error message
+    }
+    throw new Error(errMsg);
   }
-  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-    return 'Jendela login Google ditutup sebelum selesai. Klik Sinkron Cloud untuk mencoba lagi.';
-  }
-  if (code === 'auth/unauthorized-domain') {
-    const host = typeof window !== 'undefined' ? window.location.hostname : '';
-    return host
-      ? `Domain "${host}" belum terdaftar di daftar Authorized domains Firebase Authentication.`
-      : 'Domain URL ini belum terdaftar untuk login Google pada proyek Firebase.';
-  }
-  if (code === 'auth/network-request-failed') {
-    return 'Koneksi internet bermasalah saat mencoba login Google. Periksa jaringan komputer ini.';
-  }
-  if (code === 'auth/operation-not-supported-in-this-environment') {
-    return 'Browser atau mode iframe ini membatasi login pop-up. Coba buka aplikasi di tab baru penuh.';
-  }
-  return 'Login Google gagal di browser ini. Periksa izin pop-up dan koneksi internet lalu coba lagi.';
+
+  return (await res.json()) as T;
 }
 
 export default function App() {
@@ -381,18 +220,14 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [syncState, setSyncState] = useState<'local' | 'syncing' | 'synced' | 'offline'>('local');
   const [syncErrorMsg, setSyncErrorMsg] = useState<string>('');
-  const [unauthorizedHost, setUnauthorizedHost] = useState<string>('');
   const [idbReady, setIdbReady] = useState(false);
   const [idbWritable, setIdbWritable] = useState<boolean | null>(null);
 
   const envelopeRef = useRef<PersistedEnvelope>(initialBoot.envelope);
-  const ensuredUidRef = useRef<string | null>(null);
-  const cloudTxIdsRef = useRef<Set<string>>(new Set());
-  const cloudEmpIdsRef = useRef<Set<string>>(new Set());
-  const cloudHistoryIdsRef = useRef<Set<string>>(new Set());
-  const cloudConfigExistsRef = useRef<boolean>(false);
   const hasUserChangedFilterRef = useRef<boolean>(false);
   const appliedInitialCloudSettingsRef = useRef<boolean>(false);
+  const syncInFlightRef = useRef<boolean>(false);
+  const lastRefreshAtRef = useRef<number>(0);
 
   const [confirmState, setConfirmState] = useState<{
     open: boolean;
@@ -511,130 +346,8 @@ export default function App() {
     []
   );
 
-  // Verify Firestore connection on startup
-  useEffect(() => {
-    testConnection().then((ok) => {
-      if (!ok) setSyncState('offline');
-    });
-  }, []);
-
-  const ensureUserProfile = useCallback(async (u: User): Promise<boolean> => {
-    if (ensuredUidRef.current === u.uid) return true;
-    const userRef = doc(db, 'users', u.uid);
-    const createPayload = {
-      uid: u.uid,
-      email: clampStr(u.email || '', 200),
-      displayName: clampStr(u.displayName || 'Admin SRT 39', 150),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-    const updatePayload = {
-      email: clampStr(u.email || '', 200),
-      displayName: clampStr(u.displayName || 'Admin SRT 39', 150),
-      updatedAt: serverTimestamp(),
-    };
-    try {
-      const snap = await getDocFromServer(userRef).catch(() => getDoc(userRef));
-      if (!snap.exists()) {
-        await upsertDocSafe(userRef, createPayload, updatePayload, false);
-      } else {
-        await upsertDocSafe(userRef, createPayload, updatePayload, true);
-      }
-      ensuredUidRef.current = u.uid;
-      return true;
-    } catch (error) {
-      logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${u.uid}`);
-      return false;
-    }
-  }, []);
-
-  const buildOpsForPendingMutations = useCallback(
-    (
-      uid: string,
-      state: AppState,
-      historyLogList: HistoryEntry[],
-      pending: PendingCloudMutations,
-      existingTxIds: Set<string>,
-      existingEmpIds: Set<string>,
-      existingHistoryIds: Set<string>,
-      configExists: boolean
-    ): BatchOp[] => {
-      const ops: BatchOp[] = [];
-      const txMap = new Map(state.transactions.map((t) => [sanitizeFirestoreId(t.id), t]));
-      const empMap = new Map(state.masterEmployees.map((e) => [sanitizeFirestoreId(e.id), e]));
-      const histMap = new Map(historyLogList.map((h) => [sanitizeFirestoreId(h.id), h]));
-
-      const dirtyTxSet = new Set(pending.dirtyTxIds.map(sanitizeFirestoreId));
-      const deletedTxSet = new Set(pending.deletedTxIds.map(sanitizeFirestoreId));
-      dirtyTxSet.forEach((sid) => {
-        if (deletedTxSet.has(sid)) return;
-        const tx = txMap.get(sid);
-        if (!tx) return;
-        const ref = doc(db, 'users', uid, 'transactions', sid);
-        if (existingTxIds.has(sid)) {
-          ops.push({ kind: 'update', ref, data: buildTxPayload(tx, uid, false) });
-        } else {
-          ops.push({ kind: 'set', ref, data: buildTxPayload(tx, uid, true) });
-          existingTxIds.add(sid);
-        }
-      });
-      deletedTxSet.forEach((sid) => {
-        if (!existingTxIds.has(sid) && !dirtyTxSet.has(sid)) return;
-        ops.push({ kind: 'delete', ref: doc(db, 'users', uid, 'transactions', sid) });
-        existingTxIds.delete(sid);
-      });
-
-      const dirtyEmpSet = new Set(pending.dirtyEmpIds.map(sanitizeFirestoreId));
-      const deletedEmpSet = new Set(pending.deletedEmpIds.map(sanitizeFirestoreId));
-      dirtyEmpSet.forEach((sid) => {
-        if (deletedEmpSet.has(sid)) return;
-        const emp = empMap.get(sid);
-        if (!emp) return;
-        const ref = doc(db, 'users', uid, 'employees', sid);
-        if (existingEmpIds.has(sid)) {
-          ops.push({ kind: 'update', ref, data: buildEmployeePayload(emp, uid, false) });
-        } else {
-          ops.push({ kind: 'set', ref, data: buildEmployeePayload(emp, uid, true) });
-          existingEmpIds.add(sid);
-        }
-      });
-      deletedEmpSet.forEach((sid) => {
-        if (!existingEmpIds.has(sid) && !dirtyEmpSet.has(sid)) return;
-        ops.push({ kind: 'delete', ref: doc(db, 'users', uid, 'employees', sid) });
-        existingEmpIds.delete(sid);
-      });
-
-      const dirtyHistSet = new Set(pending.dirtyHistoryIds.map(sanitizeFirestoreId));
-      dirtyHistSet.forEach((sid) => {
-        if (existingHistoryIds.has(sid)) return;
-        const entry = histMap.get(sid);
-        if (!entry) return;
-        ops.push({
-          kind: 'set',
-          ref: doc(db, 'users', uid, 'history', sid),
-          data: buildHistoryPayload(entry, uid),
-        });
-        existingHistoryIds.add(sid);
-      });
-
-      if (pending.dirtySettings) {
-        const cfgRef = doc(db, 'users', uid, 'settings', 'config');
-        if (configExists) {
-          ops.push({ kind: 'update', ref: cfgRef, data: buildSettingsPayload(state, uid, false) });
-        } else {
-          ops.push({ kind: 'set', ref: cfgRef, data: buildSettingsPayload(state, uid, true) });
-        }
-      }
-
-      return ops;
-    },
-    []
-  );
-
   const flushPendingMutations = useCallback(
     async (targetUser?: User | null): Promise<boolean> => {
-      const u = targetUser ?? user;
-      if (!u || !u.emailVerified) return false;
       const currentEnv = envelopeRef.current;
       if (!hasAnyPendingMutation(currentEnv.pendingMutations)) {
         setHasUnsyncedLocal(false);
@@ -645,50 +358,66 @@ export default function App() {
 
       setSyncState('syncing');
       try {
-        const ok = await ensureUserProfile(u);
-        if (!ok) {
-          setSyncState('offline');
-          setSyncErrorMsg('Profil pengguna Cloud gagal dibuat. Coba sinkronkan ulang.');
-          return false;
+        const activeUser = targetUser || user || (await ensureAnonymousSession());
+        if (!activeUser) {
+          throw new Error('Koneksi sinkronisasi belum siap.');
         }
-        const txCol = collection(db, 'users', u.uid, 'transactions');
-        const empCol = collection(db, 'users', u.uid, 'employees');
-        const histCol = collection(db, 'users', u.uid, 'history');
-        const cfgRef = doc(db, 'users', u.uid, 'settings', 'config');
-        const txQuery = query(txCol, where('ownerId', '==', u.uid));
-        const empQuery = query(empCol, where('ownerId', '==', u.uid));
-        const histQuery = query(histCol, where('ownerId', '==', u.uid));
-        const [txSnap, empSnap, histSnap, cfgSnap] = await Promise.all([
-          getDocsFromServer(txQuery).catch(() => getDocs(txQuery)),
-          getDocsFromServer(empQuery).catch(() => getDocs(empQuery)),
-          getDocsFromServer(histQuery).catch(() => getDocs(histQuery)),
-          getDocFromServer(cfgRef).catch(() => getDoc(cfgRef)),
-        ]);
 
-        const existingTxIds = new Set(txSnap.docs.map((d) => d.id));
-        const existingEmpIds = new Set(empSnap.docs.map((d) => d.id));
-        const existingHistoryIds = new Set(histSnap.docs.map((d) => d.id));
-        cloudTxIdsRef.current = existingTxIds;
-        cloudEmpIdsRef.current = existingEmpIds;
-        cloudHistoryIdsRef.current = existingHistoryIds;
-        cloudConfigExistsRef.current = cfgSnap.exists();
-
-        const ops = buildOpsForPendingMutations(
-          u.uid,
-          currentEnv.state,
-          currentEnv.historyLog,
-          currentEnv.pendingMutations,
-          existingTxIds,
-          existingEmpIds,
-          existingHistoryIds,
-          cfgSnap.exists()
+        const pending = currentEnv.pendingMutations;
+        const txMap = new Map(
+          currentEnv.state.transactions.map((t) => [sanitizeFirestoreId(t.id), t])
         );
-        if (ops.length > 0) {
-          await commitBatchChunks(ops);
-        }
-        if (currentEnv.pendingMutations.dirtySettings) {
-          cloudConfigExistsRef.current = true;
-        }
+        const empMap = new Map(
+          currentEnv.state.masterEmployees.map((e) => [sanitizeFirestoreId(e.id), e])
+        );
+        const histMap = new Map(
+          currentEnv.historyLog.map((h) => [sanitizeFirestoreId(h.id), h])
+        );
+
+        const deletedTxSet = new Set(pending.deletedTxIds.map(sanitizeFirestoreId));
+        const deletedEmpSet = new Set(pending.deletedEmpIds.map(sanitizeFirestoreId));
+
+        const upsertTransactions = pending.dirtyTxIds
+          .map(sanitizeFirestoreId)
+          .filter((id) => !deletedTxSet.has(id))
+          .map((id) => txMap.get(id))
+          .filter((tx): tx is Transaction => Boolean(tx));
+
+        const upsertEmployees = pending.dirtyEmpIds
+          .map(sanitizeFirestoreId)
+          .filter((id) => !deletedEmpSet.has(id))
+          .map((id) => empMap.get(id))
+          .filter((emp): emp is MasterEmployee => Boolean(emp));
+
+        const historyEntries = pending.dirtyHistoryIds
+          .map(sanitizeFirestoreId)
+          .map((id) => histMap.get(id))
+          .filter((entry): entry is HistoryEntry => Boolean(entry));
+
+        await apiRequest(
+          '/api/workspace/sync-pending',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              upsertTransactions,
+              deleteTxIds: Array.from(deletedTxSet),
+              upsertEmployees,
+              deleteEmpIds: Array.from(deletedEmpSet),
+              historyEntries,
+              settings: pending.dirtySettings
+                ? {
+                    officials: currentEnv.state.officials,
+                    customMainTitle: currentEnv.state.customMainTitle,
+                    customActivityTitle: currentEnv.state.customActivityTitle,
+                    currentMonth: currentEnv.state.currentMonth,
+                    currentCategory: currentEnv.state.currentCategory,
+                  }
+                : undefined,
+            }),
+          },
+          activeUser
+        );
+
         const cleared: PendingCloudMutations = { ...EMPTY_PENDING_MUTATIONS };
         setPendingMutations(cleared);
         setHasUnsyncedLocal(false);
@@ -703,53 +432,230 @@ export default function App() {
         );
         return true;
       } catch (error) {
+        console.error('Flush pending mutations failed:', error);
         setSyncState('offline');
-        setSyncErrorMsg('Sebagian perubahan belum tersinkron ke Cloud. Periksa koneksi lalu coba lagi.');
-        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${u.uid}`);
+        setSyncErrorMsg('Sebagian perubahan belum tersinkron. Periksa koneksi internet lalu coba lagi.');
         return false;
       }
     },
-    [user, ensureUserProfile, buildOpsForPendingMutations, persistEnvelope]
+    [user, persistEnvelope]
   );
 
-  // Auto-retry pending Cloud mutations when browser reconnects
+  const applyServerSnapshot = useCallback(
+    (snapshot: WorkspaceApiResponse) => {
+      const pending = envelopeRef.current.pendingMutations;
+      const mergedTx = mergeRemoteTransactions(
+        snapshot.state.transactions,
+        envelopeRef.current.state.transactions,
+        pending
+      );
+      const mergedEmp = mergeRemoteEmployees(
+        snapshot.state.masterEmployees,
+        envelopeRef.current.state.masterEmployees,
+        pending
+      );
+      const mergedHist = mergeHistoryLists(
+        snapshot.historyLog,
+        envelopeRef.current.historyLog,
+        pending.dirtyHistoryIds
+      );
+
+      const shouldApplyFilterFromServer =
+        !appliedInitialCloudSettingsRef.current && !hasUserChangedFilterRef.current;
+      if (shouldApplyFilterFromServer) {
+        appliedInitialCloudSettingsRef.current = true;
+      }
+
+      const nextState: AppState = pending.dirtySettings
+        ? {
+            ...envelopeRef.current.state,
+            transactions: mergedTx,
+            masterEmployees: mergedEmp,
+          }
+        : {
+            ...envelopeRef.current.state,
+            transactions: mergedTx,
+            masterEmployees: mergedEmp,
+            officials: {
+              ppkName: snapshot.state.officials.ppkName || DEFAULT_OFFICIALS.ppkName,
+              ppkNip: snapshot.state.officials.ppkNip ?? DEFAULT_OFFICIALS.ppkNip,
+              bendName: snapshot.state.officials.bendName || DEFAULT_OFFICIALS.bendName,
+              bendNip: snapshot.state.officials.bendNip ?? DEFAULT_OFFICIALS.bendNip,
+              kepsekName: snapshot.state.officials.kepsekName || DEFAULT_OFFICIALS.kepsekName,
+              kepsekNip: snapshot.state.officials.kepsekNip ?? DEFAULT_OFFICIALS.kepsekNip,
+            },
+            customMainTitle: snapshot.state.customMainTitle || DEFAULT_CUSTOM_MAIN_TITLE,
+            customActivityTitle:
+              snapshot.state.customActivityTitle || DEFAULT_CUSTOM_ACTIVITY_TITLE,
+            currentMonth: shouldApplyFilterFromServer
+              ? snapshot.state.currentMonth || envelopeRef.current.state.currentMonth
+              : envelopeRef.current.state.currentMonth,
+            currentCategory: shouldApplyFilterFromServer
+              ? sanitizeCategory(snapshot.state.currentCategory)
+              : envelopeRef.current.state.currentCategory,
+          };
+
+      const stillPending = hasAnyPendingMutation(pending);
+      setAppState(nextState);
+      setHistoryLog(mergedHist);
+      setSyncErrorMsg('');
+      setSyncState(stillPending ? 'offline' : 'synced');
+      persistEnvelope(
+        nextState,
+        envelopeRef.current.activeTab,
+        mergedHist,
+        stillPending,
+        pending
+      );
+      return { mergedTx, mergedHist };
+    },
+    [persistEnvelope]
+  );
+
+  const refreshFromCloud = useCallback(
+    async (showSuccessToast = true, targetUser?: User | null): Promise<boolean> => {
+      if (syncInFlightRef.current) return true;
+      const now = Date.now();
+      if (!showSuccessToast && now - lastRefreshAtRef.current < 4000) {
+        return true;
+      }
+      lastRefreshAtRef.current = now;
+      syncInFlightRef.current = true;
+      if (showSuccessToast) {
+        setSyncState('syncing');
+      }
+
+      try {
+        const activeUser = targetUser || user || (await ensureAnonymousSession());
+        if (!activeUser) {
+          throw new Error('Koneksi sinkronisasi belum siap.');
+        }
+
+        if (hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
+          await flushPendingMutations(activeUser);
+        }
+
+        const snapshot = await apiRequest<WorkspaceApiResponse>(
+          '/api/workspace',
+          { method: 'GET' },
+          activeUser
+        );
+        const { mergedTx, mergedHist } = applyServerSnapshot(snapshot);
+        if (showSuccessToast) {
+          showToast(
+            `Sinkronisasi selesai: ${mergedTx.length} entri SPJ & ${mergedHist.length} riwayat.`
+          );
+        }
+        return true;
+      } catch (error) {
+        console.error('Refresh workspace failed:', error);
+        setSyncState('offline');
+        if (showSuccessToast) {
+          setSyncErrorMsg('Gagal memuat pembaruan. Periksa koneksi internet Anda.');
+          showToast('Gagal menyegarkan data. Periksa koneksi internet.');
+        }
+        return false;
+      } finally {
+        syncInFlightRef.current = false;
+      }
+    },
+    [user, flushPendingMutations, applyServerSnapshot, showToast]
+  );
+
+  // Automatic silent session + initial sync + periodic cross-device polling
+  useEffect(() => {
+    let unsubAuth: (() => void) | null = null;
+    let mounted = true;
+    let initStarted = false;
+
+    void authPersistenceReady.finally(() => {
+      if (!mounted) return;
+      unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
+        if (!mounted) return;
+        if (!currentUser) {
+          setUser(null);
+          if (!initStarted) {
+            initStarted = true;
+            try {
+              const anonUser = await ensureAnonymousSession();
+              if (!mounted) return;
+              if (!anonUser) {
+                setAuthReady(true);
+                setSyncState('offline');
+              }
+            } catch (err) {
+              console.error('Auto session init failed:', err);
+              if (mounted) {
+                setAuthReady(true);
+                setSyncState('offline');
+                setSyncErrorMsg('Sinkronisasi otomatis sedang luring. Data tetap tersimpan di perangkat.');
+              }
+            }
+          }
+          return;
+        }
+
+        setUser(currentUser);
+        setAuthReady(true);
+        await refreshFromCloud(false, currentUser);
+      });
+    });
+
+    return () => {
+      mounted = false;
+      if (unsubAuth) unsubAuth();
+    };
+  }, [refreshFromCloud]);
+
+  // Auto-sync across computers & phones when online, switching tabs, or every 15s while open
   useEffect(() => {
     const handleOnline = () => {
-      if (user && user.emailVerified && hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
-        void flushPendingMutations(user);
+      void refreshFromCloud(false);
+    };
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void refreshFromCloud(false);
       }
     };
+    const pollId = window.setInterval(() => {
+      if (
+        typeof document !== 'undefined' &&
+        document.visibilityState === 'visible' &&
+        !hasAnyPendingMutation(envelopeRef.current.pendingMutations)
+      ) {
+        void refreshFromCloud(false);
+      }
+    }, 15000);
+
     window.addEventListener('online', handleOnline);
-    return () => window.removeEventListener('online', handleOnline);
-  }, [user, flushPendingMutations]);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      window.clearInterval(pollId);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [refreshFromCloud]);
 
   const syncSettingsToCloud = useCallback(
     async (nextState: AppState, markDirtyOnFail = true, newHistoryEntry?: HistoryEntry) => {
-      if (!user || !user.emailVerified) return;
       setSyncState('syncing');
       try {
-        const ok = await ensureUserProfile(user);
-        if (!ok) {
-          throw new Error('Gagal memverifikasi profil akun Cloud');
-        }
-        const configRef = doc(db, 'users', user.uid, 'settings', 'config');
-        await upsertDocSafe(
-          configRef,
-          buildSettingsPayload(nextState, user.uid, true),
-          buildSettingsPayload(nextState, user.uid, false),
-          cloudConfigExistsRef.current
-        );
-        cloudConfigExistsRef.current = true;
-        if (newHistoryEntry) {
-          const histSid = sanitizeFirestoreId(newHistoryEntry.id);
-          if (!cloudHistoryIdsRef.current.has(histSid)) {
-            await setDoc(
-              doc(db, 'users', user.uid, 'history', histSid),
-              buildHistoryPayload(newHistoryEntry, user.uid)
-            );
-            cloudHistoryIdsRef.current.add(histSid);
-          }
-        }
+        await apiRequest('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            settings: {
+              officials: nextState.officials,
+              customMainTitle: nextState.customMainTitle,
+              customActivityTitle: nextState.customActivityTitle,
+              currentMonth: nextState.currentMonth,
+              currentCategory: nextState.currentCategory,
+            },
+            historyEntry: newHistoryEntry,
+          }),
+        });
+
         const nextPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
           dirtySettings: false,
@@ -772,13 +678,17 @@ export default function App() {
           nextPending
         );
       } catch (error) {
+        console.error('Sync settings failed:', error);
         if (markDirtyOnFail) {
           const nextPending: PendingCloudMutations = {
             ...envelopeRef.current.pendingMutations,
             dirtySettings: true,
             dirtyHistoryIds: newHistoryEntry
               ? Array.from(
-                  new Set([...envelopeRef.current.pendingMutations.dirtyHistoryIds, newHistoryEntry.id])
+                  new Set([
+                    ...envelopeRef.current.pendingMutations.dirtyHistoryIds,
+                    newHistoryEntry.id,
+                  ])
                 )
               : envelopeRef.current.pendingMutations.dirtyHistoryIds,
           };
@@ -793,414 +703,11 @@ export default function App() {
           );
         }
         setSyncState('offline');
-        setSyncErrorMsg('Pengaturan belum tersinkron ke Cloud. Klik Sinkronkan Ulang saat terhubung.');
-        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}/settings/config`);
+        setSyncErrorMsg('Pengaturan belum tersinkron. Klik Sinkronkan Ulang saat terhubung.');
       }
     },
-    [user, ensureUserProfile, persistEnvelope]
+    [persistEnvelope]
   );
-
-  // Firebase Auth & Real-time Firestore Subscriptions
-  useEffect(() => {
-    let unsubTx: (() => void) | null = null;
-    let unsubEmp: (() => void) | null = null;
-    let unsubHistory: (() => void) | null = null;
-    let unsubSettings: (() => void) | null = null;
-    let unsubAuth: (() => void) | null = null;
-    let mounted = true;
-
-    void authPersistenceReady.finally(() => {
-      if (!mounted) return;
-      unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
-        if (unsubTx) unsubTx();
-        if (unsubEmp) unsubEmp();
-        if (unsubHistory) unsubHistory();
-        if (unsubSettings) unsubSettings();
-        unsubTx = null;
-        unsubEmp = null;
-        unsubHistory = null;
-        unsubSettings = null;
-        ensuredUidRef.current = null;
-        cloudTxIdsRef.current.clear();
-        cloudEmpIdsRef.current.clear();
-        cloudHistoryIdsRef.current.clear();
-        cloudConfigExistsRef.current = false;
-        appliedInitialCloudSettingsRef.current = false;
-
-        setUser(currentUser);
-        setAuthReady(true);
-
-        if (!currentUser) {
-          setSyncState('local');
-          setSyncErrorMsg('');
-          return;
-        }
-
-        if (!currentUser.emailVerified) {
-          setSyncState('local');
-          setSyncErrorMsg('Email akun Google belum terverifikasi sehingga sinkron Cloud belum aktif.');
-          return;
-        }
-
-        setSyncState('syncing');
-        setSyncErrorMsg('');
-        const txCol = collection(db, 'users', currentUser.uid, 'transactions');
-        const empCol = collection(db, 'users', currentUser.uid, 'employees');
-        const histCol = collection(db, 'users', currentUser.uid, 'history');
-        const txQuery = query(txCol, where('ownerId', '==', currentUser.uid));
-        const empQuery = query(empCol, where('ownerId', '==', currentUser.uid));
-        const histQuery = query(histCol, where('ownerId', '==', currentUser.uid));
-        const configRef = doc(db, 'users', currentUser.uid, 'settings', 'config');
-
-        try {
-          const profileOk = await ensureUserProfile(currentUser);
-          if (!profileOk) {
-            setSyncState('offline');
-            setSyncErrorMsg('Gagal mengakses profil Cloud. Periksa koneksi lalu klik Sinkronkan Ulang.');
-            return;
-          }
-
-          const [txSnap, empSnap, histSnap, cfgSnap] = await Promise.all([
-            getDocsFromServer(txQuery).catch(() => getDocs(txQuery)),
-            getDocsFromServer(empQuery).catch(() => getDocs(empQuery)),
-            getDocsFromServer(histQuery).catch(() => getDocs(histQuery)),
-            getDocFromServer(configRef).catch(() => getDoc(configRef)),
-          ]);
-
-          const existingTxIds = new Set(txSnap.docs.map((d) => d.id));
-          const existingEmpIds = new Set(empSnap.docs.map((d) => d.id));
-          const existingHistoryIds = new Set(histSnap.docs.map((d) => d.id));
-          cloudTxIdsRef.current = existingTxIds;
-          cloudEmpIdsRef.current = existingEmpIds;
-          cloudHistoryIdsRef.current = existingHistoryIds;
-          cloudConfigExistsRef.current = cfgSnap.exists();
-
-          const localEnv = envelopeRef.current;
-          const cloudIsEmpty = txSnap.empty && empSnap.empty && !cfgSnap.exists();
-
-          try {
-            if (cloudIsEmpty) {
-              const ops: BatchOp[] = [];
-              localEnv.state.transactions.forEach((tx) => {
-                const sid = sanitizeFirestoreId(tx.id);
-                ops.push({
-                  kind: 'set',
-                  ref: doc(db, 'users', currentUser.uid, 'transactions', sid),
-                  data: buildTxPayload(tx, currentUser.uid, true),
-                });
-                existingTxIds.add(sid);
-              });
-              localEnv.state.masterEmployees.forEach((emp) => {
-                const sid = sanitizeFirestoreId(emp.id);
-                ops.push({
-                  kind: 'set',
-                  ref: doc(db, 'users', currentUser.uid, 'employees', sid),
-                  data: buildEmployeePayload(emp, currentUser.uid, true),
-                });
-                existingEmpIds.add(sid);
-              });
-              localEnv.historyLog.forEach((entry) => {
-                const sid = sanitizeFirestoreId(entry.id);
-                if (existingHistoryIds.has(sid)) return;
-                ops.push({
-                  kind: 'set',
-                  ref: doc(db, 'users', currentUser.uid, 'history', sid),
-                  data: buildHistoryPayload(entry, currentUser.uid),
-                });
-                existingHistoryIds.add(sid);
-              });
-              ops.push({
-                kind: 'set',
-                ref: configRef,
-                data: buildSettingsPayload(localEnv.state, currentUser.uid, true),
-              });
-              cloudConfigExistsRef.current = true;
-              await commitBatchChunks(ops);
-              const cleared = { ...EMPTY_PENDING_MUTATIONS };
-              setPendingMutations(cleared);
-              setHasUnsyncedLocal(false);
-              persistEnvelope(localEnv.state, localEnv.activeTab, localEnv.historyLog, false, cleared);
-            } else {
-              const effectivePending: PendingCloudMutations =
-                histSnap.empty && localEnv.historyLog.length > 0
-                  ? {
-                      ...localEnv.pendingMutations,
-                      dirtyHistoryIds: Array.from(
-                        new Set([
-                          ...localEnv.pendingMutations.dirtyHistoryIds,
-                          ...localEnv.historyLog.map((h) => sanitizeFirestoreId(h.id)),
-                        ])
-                      ),
-                    }
-                  : localEnv.pendingMutations;
-
-              if (hasAnyPendingMutation(effectivePending)) {
-                const ops = buildOpsForPendingMutations(
-                  currentUser.uid,
-                  localEnv.state,
-                  localEnv.historyLog,
-                  effectivePending,
-                  existingTxIds,
-                  existingEmpIds,
-                  existingHistoryIds,
-                  cfgSnap.exists()
-                );
-                if (ops.length > 0) {
-                  await commitBatchChunks(ops);
-                }
-                if (effectivePending.dirtySettings) {
-                  cloudConfigExistsRef.current = true;
-                }
-                const cleared = { ...EMPTY_PENDING_MUTATIONS };
-                setPendingMutations(cleared);
-                setHasUnsyncedLocal(false);
-                persistEnvelope(localEnv.state, localEnv.activeTab, localEnv.historyLog, false, cleared);
-              }
-            }
-          } catch (mergeErr) {
-            setSyncState('offline');
-            setSyncErrorMsg('Sinkronisasi awal tertunda. Klik Sinkronkan Ulang untuk mengirim perubahan.');
-            logAndCaptureFirestoreError(mergeErr, OperationType.WRITE, `users/${currentUser.uid}`);
-          }
-
-          unsubTx = onSnapshot(
-            txQuery,
-            (snap) => {
-              const nextIds = new Set<string>();
-              const remoteTx: Transaction[] = snap.docs.map((d) => {
-                nextIds.add(d.id);
-                const data = d.data();
-                return {
-                  id: d.id,
-                  category: sanitizeCategory(data.category),
-                  bulan: String(data.bulan || 'November'),
-                  noBukti: String(data.noBukti || ''),
-                  tanggal: String(data.tanggal || ''),
-                  nama: String(data.nama || ''),
-                  jenjang: String(data.jenjang || 'SRMP'),
-                  jenis: String(data.jenis || ''),
-                  status: String(data.status || 'NON ASN'),
-                  jabatan: String(data.jabatan || ''),
-                  tarif: Number(data.tarif) || 0,
-                  jamlat: Number(data.jamlat) || 1,
-                  pajakRate: Number(data.pajakRate) || 0,
-                  customRangka: typeof data.customRangka === 'string' ? data.customRangka : '',
-                };
-              });
-              cloudTxIdsRef.current = nextIds;
-              setAppState((prev) => ({
-                ...prev,
-                transactions: mergeRemoteTransactions(
-                  remoteTx,
-                  prev.transactions,
-                  envelopeRef.current.pendingMutations
-                ),
-              }));
-              setLastUpdatedAt(Date.now());
-              if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
-                setSyncState('synced');
-              }
-            },
-            (error) => {
-              setSyncState('offline');
-              logAndCaptureFirestoreError(
-                error,
-                OperationType.LIST,
-                `users/${currentUser.uid}/transactions`
-              );
-            }
-          );
-
-          unsubEmp = onSnapshot(
-            empQuery,
-            (snap) => {
-              const nextIds = new Set<string>();
-              const remoteEmp: MasterEmployee[] = snap.docs.map((d) => {
-                nextIds.add(d.id);
-                const data = d.data();
-                return {
-                  id: d.id,
-                  category: sanitizeCategory(data.category),
-                  nama: String(data.nama || ''),
-                  jenis: String(data.jenis || ''),
-                  jenjang: String(data.jenjang || 'SRMP'),
-                  status: String(data.status || 'NON ASN'),
-                  jabatan: String(data.jabatan || ''),
-                  tarif: Number(data.tarif) || 0,
-                  pajakRate: Number(data.pajakRate) || 0,
-                };
-              });
-              cloudEmpIdsRef.current = nextIds;
-              setAppState((prev) => ({
-                ...prev,
-                masterEmployees: mergeRemoteEmployees(
-                  remoteEmp,
-                  prev.masterEmployees,
-                  envelopeRef.current.pendingMutations
-                ),
-              }));
-              setLastUpdatedAt(Date.now());
-              if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
-                setSyncState('synced');
-              }
-            },
-            (error) => {
-              setSyncState('offline');
-              logAndCaptureFirestoreError(
-                error,
-                OperationType.LIST,
-                `users/${currentUser.uid}/employees`
-              );
-            }
-          );
-
-          unsubHistory = onSnapshot(
-            histQuery,
-            (snap) => {
-              const nextIds = new Set<string>();
-              const remoteHist: HistoryEntry[] = snap.docs.map((d) => {
-                nextIds.add(d.id);
-                const data = d.data();
-                return {
-                  id: d.id,
-                  timestamp: Number(data.timestamp) || Date.now(),
-                  action: String(data.action || 'Aktivitas'),
-                  detail: String(data.detail || ''),
-                };
-              });
-              cloudHistoryIdsRef.current = nextIds;
-              setHistoryLog((prev) =>
-                mergeHistoryLists(
-                  remoteHist,
-                  prev,
-                  envelopeRef.current.pendingMutations.dirtyHistoryIds
-                )
-              );
-              setLastUpdatedAt(Date.now());
-              if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
-                setSyncState('synced');
-              }
-            },
-            (error) => {
-              setSyncState('offline');
-              logAndCaptureFirestoreError(
-                error,
-                OperationType.LIST,
-                `users/${currentUser.uid}/history`
-              );
-            }
-          );
-
-          unsubSettings = onSnapshot(
-            configRef,
-            (snap) => {
-              if (!snap.exists()) return;
-              cloudConfigExistsRef.current = true;
-              const d = snap.data();
-              const shouldApplyFilterFromCloud =
-                !appliedInitialCloudSettingsRef.current && !hasUserChangedFilterRef.current;
-              if (shouldApplyFilterFromCloud) {
-                appliedInitialCloudSettingsRef.current = true;
-              }
-              setAppState((prev) => {
-                if (envelopeRef.current.pendingMutations.dirtySettings) {
-                  return prev;
-                }
-                return {
-                  ...prev,
-                  officials: {
-                    ppkName: String(d.ppkName || DEFAULT_OFFICIALS.ppkName),
-                    ppkNip: String(d.ppkNip ?? DEFAULT_OFFICIALS.ppkNip),
-                    bendName: String(d.bendName || DEFAULT_OFFICIALS.bendName),
-                    bendNip: String(d.bendNip ?? DEFAULT_OFFICIALS.bendNip),
-                    kepsekName: String(d.kepsekName || DEFAULT_OFFICIALS.kepsekName),
-                    kepsekNip: String(d.kepsekNip ?? DEFAULT_OFFICIALS.kepsekNip),
-                  },
-                  customMainTitle: String(d.customMainTitle || DEFAULT_CUSTOM_MAIN_TITLE),
-                  customActivityTitle: String(d.customActivityTitle || DEFAULT_CUSTOM_ACTIVITY_TITLE),
-                  currentMonth: shouldApplyFilterFromCloud
-                    ? String(d.currentMonth || prev.currentMonth)
-                    : prev.currentMonth,
-                  currentCategory: shouldApplyFilterFromCloud
-                    ? d.currentCategory === 'ekskul' ||
-                      d.currentCategory === 'gurutamu' ||
-                      d.currentCategory === 'lainnya'
-                      ? d.currentCategory
-                      : prev.currentCategory
-                    : prev.currentCategory,
-                };
-              });
-              setLastUpdatedAt(Date.now());
-              if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
-                setSyncState('synced');
-              }
-            },
-            (error) => {
-              setSyncState('offline');
-              logAndCaptureFirestoreError(
-                error,
-                OperationType.GET,
-                `users/${currentUser.uid}/settings/config`
-              );
-            }
-          );
-        } catch (error) {
-          setSyncState('offline');
-          setSyncErrorMsg('Koneksi ke database Cloud terganggu. Perubahan tetap disimpan di perangkat.');
-          logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${currentUser.uid}`);
-        }
-      });
-    });
-
-    return () => {
-      mounted = false;
-      if (unsubAuth) unsubAuth();
-      if (unsubTx) unsubTx();
-      if (unsubEmp) unsubEmp();
-      if (unsubHistory) unsubHistory();
-      if (unsubSettings) unsubSettings();
-    };
-  }, [ensureUserProfile, buildOpsForPendingMutations, persistEnvelope]);
-
-  const handleGoogleSignIn = async (): Promise<void> => {
-    setSyncErrorMsg('');
-    setUnauthorizedHost('');
-    try {
-      await authPersistenceReady;
-      await signInWithPopup(auth, googleProvider);
-      showToast('Berhasil masuk dengan Google. Data disinkronkan ke Cloud.');
-    } catch (err) {
-      console.error('Login Google gagal:', err);
-      if (err instanceof FirebaseError && err.code === 'auth/unauthorized-domain' && typeof window !== 'undefined') {
-        setUnauthorizedHost(window.location.hostname);
-      }
-      const msg = formatFirebaseAuthError(err);
-      setSyncErrorMsg(msg);
-      showToast(msg);
-    }
-  };
-
-  const handleCopyUnauthorizedHost = async (): Promise<void> => {
-    if (!unauthorizedHost) return;
-    try {
-      await navigator.clipboard.writeText(unauthorizedHost);
-      showToast(`Domain "${unauthorizedHost}" disalin. Tempel di Authorized domains Firebase.`);
-    } catch {
-      showToast(`Salin domain ini: ${unauthorizedHost}`);
-    }
-  };
-
-  const handleSignOut = async (): Promise<void> => {
-    try {
-      await signOut(auth);
-      setSyncState('local');
-      setSyncErrorMsg('');
-      setUnauthorizedHost('');
-      showToast('Keluar dari akun Cloud. Mode simpan perangkat aktif.');
-    } catch (err) {
-      console.error('Logout gagal:', err);
-    }
-  };
 
   const filteredTransactions = useMemo(() => {
     return appState.transactions.filter((t) => {
@@ -1232,9 +739,7 @@ export default function App() {
     const stamp = Date.now();
     setAppState(nextState);
     persistEnvelope(nextState, activeTab, historyLog, hasUnsyncedLocal, pendingMutations, stamp);
-    if (user && user.emailVerified) {
-      void syncSettingsToCloud(nextState, false);
-    }
+    void syncSettingsToCloud(nextState, false);
   };
 
   const handleMonthChange = (month: string): void => {
@@ -1244,9 +749,7 @@ export default function App() {
     const stamp = Date.now();
     setAppState(nextState);
     persistEnvelope(nextState, activeTab, historyLog, hasUnsyncedLocal, pendingMutations, stamp);
-    if (user && user.emailVerified) {
-      void syncSettingsToCloud(nextState, false);
-    }
+    void syncSettingsToCloud(nextState, false);
   };
 
   const handleSubmitTx = async (tx: Transaction, isEdit: boolean): Promise<void> => {
@@ -1276,61 +779,41 @@ export default function App() {
     setHasUnsyncedLocal(true);
     setEditingTx(null);
     persistEnvelope(nextState, activeTab, nextHistory, true, nextPending, stamp);
+    showToast(isEdit ? 'Perubahan SPJ tersimpan otomatis.' : 'Entri SPJ baru tersimpan otomatis.');
 
-    if (!user && !initialBoot.localStorageWritable && idbWritable === false) {
-      showToast('Penyimpanan browser diblokir! Masuk Google (Sinkron Cloud) agar data tidak hilang.');
-    } else {
-      showToast(isEdit ? 'Perubahan SPJ tersimpan otomatis.' : 'Entri SPJ baru tersimpan otomatis.');
-    }
+    setSyncState('syncing');
+    try {
+      await apiRequest('/api/transactions', {
+        method: 'POST',
+        body: JSON.stringify({ transaction: normalizedTx, historyEntry: newEntry }),
+      });
 
-    if (user && user.emailVerified) {
-      setSyncState('syncing');
-      try {
-        const profileOk = await ensureUserProfile(user);
-        if (!profileOk) {
-          throw new Error('Profil pengguna Cloud tidak tersedia');
-        }
-        const txRef = doc(db, 'users', user.uid, 'transactions', safeId);
-        await upsertDocSafe(
-          txRef,
-          buildTxPayload(normalizedTx, user.uid, true),
-          buildTxPayload(normalizedTx, user.uid, false),
-          cloudTxIdsRef.current.has(safeId)
-        );
-        cloudTxIdsRef.current.add(safeId);
-        if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
-          await setDoc(
-            doc(db, 'users', user.uid, 'history', newEntry.id),
-            buildHistoryPayload(newEntry, user.uid)
-          );
-          cloudHistoryIdsRef.current.add(newEntry.id);
-        }
-        const cleanedPending: PendingCloudMutations = {
-          ...envelopeRef.current.pendingMutations,
-          dirtyTxIds: envelopeRef.current.pendingMutations.dirtyTxIds.filter((id) => id !== safeId),
-          dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
-            (id) => id !== newEntry.id
-          ),
-        };
-        const stillPending = hasAnyPendingMutation(cleanedPending);
-        setPendingMutations(cleanedPending);
-        setHasUnsyncedLocal(stillPending);
-        setSyncErrorMsg('');
-        setSyncState('synced');
-        persistEnvelope(
-          envelopeRef.current.state,
-          envelopeRef.current.activeTab,
-          envelopeRef.current.historyLog,
-          stillPending,
-          cleanedPending
-        );
-      } catch (error) {
-        setHasUnsyncedLocal(true);
-        setSyncState('offline');
-        setSyncErrorMsg('Gagal menyimpan ke Cloud. Data aman di perangkat dan bisa disinkronkan ulang.');
-        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}/transactions/${safeId}`);
-        showToast('Tersimpan di perangkat, tetapi sinkronisasi Cloud gagal. Periksa koneksi Anda.');
-      }
+      const cleanedPending: PendingCloudMutations = {
+        ...envelopeRef.current.pendingMutations,
+        dirtyTxIds: envelopeRef.current.pendingMutations.dirtyTxIds.filter((id) => id !== safeId),
+        dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+          (id) => id !== newEntry.id
+        ),
+      };
+      envelopeRef.current.pendingMutations = cleanedPending;
+      const stillPending = hasAnyPendingMutation(cleanedPending);
+      setPendingMutations(cleanedPending);
+      setHasUnsyncedLocal(stillPending);
+      setSyncErrorMsg('');
+      setSyncState('synced');
+      persistEnvelope(
+        envelopeRef.current.state,
+        envelopeRef.current.activeTab,
+        envelopeRef.current.historyLog,
+        stillPending,
+        cleanedPending
+      );
+    } catch (error) {
+      console.error('Save transaction to server failed:', error);
+      setHasUnsyncedLocal(true);
+      setSyncState('offline');
+      setSyncErrorMsg('Perubahan tersimpan di perangkat dan akan disinkronkan saat koneksi normal.');
+      showToast('Tersimpan di perangkat, sinkronisasi tertunda karena koneksi.');
     }
   };
 
@@ -1366,50 +849,38 @@ export default function App() {
         if (editingTx?.id === tx.id) setEditingTx(null);
         showToast('Entri SPJ berhasil dihapus.');
 
-        if (user && user.emailVerified) {
-          setSyncState('syncing');
-          try {
-            const profileOk = await ensureUserProfile(user);
-            if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
-            await deleteDoc(doc(db, 'users', user.uid, 'transactions', safeId));
-            cloudTxIdsRef.current.delete(safeId);
-            if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
-              await setDoc(
-                doc(db, 'users', user.uid, 'history', newEntry.id),
-                buildHistoryPayload(newEntry, user.uid)
-              );
-              cloudHistoryIdsRef.current.add(newEntry.id);
-            }
-            const cleanedPending: PendingCloudMutations = {
-              ...envelopeRef.current.pendingMutations,
-              deletedTxIds: envelopeRef.current.pendingMutations.deletedTxIds.filter(
-                (id) => id !== safeId
-              ),
-              dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
-                (id) => id !== newEntry.id
-              ),
-            };
-            const stillPending = hasAnyPendingMutation(cleanedPending);
-            setPendingMutations(cleanedPending);
-            setHasUnsyncedLocal(stillPending);
-            setSyncErrorMsg('');
-            setSyncState('synced');
-            persistEnvelope(
-              envelopeRef.current.state,
-              envelopeRef.current.activeTab,
-              envelopeRef.current.historyLog,
-              stillPending,
-              cleanedPending
-            );
-          } catch (error) {
-            setSyncState('offline');
-            setSyncErrorMsg('Penghapusan belum tersinkron ke Cloud. Klik Sinkronkan Ulang saat online.');
-            logAndCaptureFirestoreError(
-              error,
-              OperationType.DELETE,
-              `users/${user.uid}/transactions/${safeId}`
-            );
-          }
+        setSyncState('syncing');
+        try {
+          await apiRequest(`/api/transactions/${encodeURIComponent(safeId)}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ historyEntry: newEntry }),
+          });
+
+          const cleanedPending: PendingCloudMutations = {
+            ...envelopeRef.current.pendingMutations,
+            deletedTxIds: envelopeRef.current.pendingMutations.deletedTxIds.filter(
+              (id) => id !== safeId
+            ),
+            dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+              (id) => id !== newEntry.id
+            ),
+          };
+          const stillPending = hasAnyPendingMutation(cleanedPending);
+          setPendingMutations(cleanedPending);
+          setHasUnsyncedLocal(stillPending);
+          setSyncErrorMsg('');
+          setSyncState('synced');
+          persistEnvelope(
+            envelopeRef.current.state,
+            envelopeRef.current.activeTab,
+            envelopeRef.current.historyLog,
+            stillPending,
+            cleanedPending
+          );
+        } catch (error) {
+          console.error('Delete transaction failed:', error);
+          setSyncState('offline');
+          setSyncErrorMsg('Penghapusan belum tersinkron. Klik Sinkronkan Ulang saat online.');
         }
       },
     });
@@ -1462,56 +933,40 @@ export default function App() {
     setHasUnsyncedLocal(true);
     showToast(`${clonedList.length} entri disalin dari Oktober ke ${targetMonth} 2026.`);
 
-    if (user && user.emailVerified) {
-      setSyncState('syncing');
-      try {
-        const profileOk = await ensureUserProfile(user);
-        if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
-        const ops: BatchOp[] = clonedList.map((tx) => {
-          cloudTxIdsRef.current.add(tx.id);
-          return {
-            kind: 'set',
-            ref: doc(db, 'users', user.uid, 'transactions', tx.id),
-            data: buildTxPayload(tx, user.uid, true),
-          };
-        });
-        if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
-          ops.push({
-            kind: 'set',
-            ref: doc(db, 'users', user.uid, 'history', newEntry.id),
-            data: buildHistoryPayload(newEntry, user.uid),
-          });
-          cloudHistoryIdsRef.current.add(newEntry.id);
-        }
-        await commitBatchChunks(ops);
-        const newIdSet = new Set(newIds);
-        const cleanedPending: PendingCloudMutations = {
-          ...envelopeRef.current.pendingMutations,
-          dirtyTxIds: envelopeRef.current.pendingMutations.dirtyTxIds.filter(
-            (id) => !newIdSet.has(id)
-          ),
-          dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
-            (id) => id !== newEntry.id
-          ),
-        };
-        const stillPending = hasAnyPendingMutation(cleanedPending);
-        setPendingMutations(cleanedPending);
-        setHasUnsyncedLocal(stillPending);
-        setSyncErrorMsg('');
-        setSyncState('synced');
-        persistEnvelope(
-          envelopeRef.current.state,
-          envelopeRef.current.activeTab,
-          envelopeRef.current.historyLog,
-          stillPending,
-          cleanedPending
-        );
-      } catch (error) {
-        setHasUnsyncedLocal(true);
-        setSyncState('offline');
-        setSyncErrorMsg('Hasil salin belum tersinkron ke Cloud. Klik Sinkronkan Ulang.');
-        logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}/transactions`);
-      }
+    setSyncState('syncing');
+    try {
+      await apiRequest('/api/transactions/batch', {
+        method: 'POST',
+        body: JSON.stringify({ transactions: clonedList, historyEntry: newEntry }),
+      });
+
+      const newIdSet = new Set(newIds);
+      const cleanedPending: PendingCloudMutations = {
+        ...envelopeRef.current.pendingMutations,
+        dirtyTxIds: envelopeRef.current.pendingMutations.dirtyTxIds.filter(
+          (id) => !newIdSet.has(id)
+        ),
+        dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+          (id) => id !== newEntry.id
+        ),
+      };
+      const stillPending = hasAnyPendingMutation(cleanedPending);
+      setPendingMutations(cleanedPending);
+      setHasUnsyncedLocal(stillPending);
+      setSyncErrorMsg('');
+      setSyncState('synced');
+      persistEnvelope(
+        envelopeRef.current.state,
+        envelopeRef.current.activeTab,
+        envelopeRef.current.historyLog,
+        stillPending,
+        cleanedPending
+      );
+    } catch (error) {
+      console.error('Batch clone transactions failed:', error);
+      setHasUnsyncedLocal(true);
+      setSyncState('offline');
+      setSyncErrorMsg('Hasil salin belum tersinkron. Klik Sinkronkan Ulang saat terhubung.');
     }
   };
 
@@ -1542,9 +997,7 @@ export default function App() {
     setPendingMutations(nextPending);
     setHasUnsyncedLocal(true);
     showToast('Data Pejabat Penandatangan & Judul berhasil disimpan otomatis.');
-    if (user && user.emailVerified) {
-      await syncSettingsToCloud(nextState, true, newEntry);
-    }
+    await syncSettingsToCloud(nextState, true, newEntry);
   };
 
   const handleAddEmployee = async (emp: MasterEmployee): Promise<void> => {
@@ -1572,51 +1025,37 @@ export default function App() {
     setHasUnsyncedLocal(true);
     showToast('Pegawai master ditambahkan dan tersimpan otomatis.');
 
-    if (user && user.emailVerified) {
-      setSyncState('syncing');
-      try {
-        const profileOk = await ensureUserProfile(user);
-        if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
-        const empRef = doc(db, 'users', user.uid, 'employees', safeId);
-        await upsertDocSafe(
-          empRef,
-          buildEmployeePayload(normalizedEmp, user.uid, true),
-          buildEmployeePayload(normalizedEmp, user.uid, false),
-          cloudEmpIdsRef.current.has(safeId)
-        );
-        cloudEmpIdsRef.current.add(safeId);
-        if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
-          await setDoc(
-            doc(db, 'users', user.uid, 'history', newEntry.id),
-            buildHistoryPayload(newEntry, user.uid)
-          );
-          cloudHistoryIdsRef.current.add(newEntry.id);
-        }
-        const cleanedPending: PendingCloudMutations = {
-          ...envelopeRef.current.pendingMutations,
-          dirtyEmpIds: envelopeRef.current.pendingMutations.dirtyEmpIds.filter((id) => id !== safeId),
-          dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
-            (id) => id !== newEntry.id
-          ),
-        };
-        const stillPending = hasAnyPendingMutation(cleanedPending);
-        setPendingMutations(cleanedPending);
-        setHasUnsyncedLocal(stillPending);
-        setSyncErrorMsg('');
-        setSyncState('synced');
-        persistEnvelope(
-          envelopeRef.current.state,
-          envelopeRef.current.activeTab,
-          envelopeRef.current.historyLog,
-          stillPending,
-          cleanedPending
-        );
-      } catch (error) {
-        setHasUnsyncedLocal(true);
-        setSyncState('offline');
-        setSyncErrorMsg('Pegawai master belum tersinkron ke Cloud. Klik Sinkronkan Ulang.');
-        logAndCaptureFirestoreError(error, OperationType.CREATE, `users/${user.uid}/employees/${safeId}`);
-      }
+    setSyncState('syncing');
+    try {
+      await apiRequest('/api/employees', {
+        method: 'POST',
+        body: JSON.stringify({ employee: normalizedEmp, historyEntry: newEntry }),
+      });
+
+      const cleanedPending: PendingCloudMutations = {
+        ...envelopeRef.current.pendingMutations,
+        dirtyEmpIds: envelopeRef.current.pendingMutations.dirtyEmpIds.filter((id) => id !== safeId),
+        dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+          (id) => id !== newEntry.id
+        ),
+      };
+      const stillPending = hasAnyPendingMutation(cleanedPending);
+      setPendingMutations(cleanedPending);
+      setHasUnsyncedLocal(stillPending);
+      setSyncErrorMsg('');
+      setSyncState('synced');
+      persistEnvelope(
+        envelopeRef.current.state,
+        envelopeRef.current.activeTab,
+        envelopeRef.current.historyLog,
+        stillPending,
+        cleanedPending
+      );
+    } catch (error) {
+      console.error('Add employee failed:', error);
+      setHasUnsyncedLocal(true);
+      setSyncState('offline');
+      setSyncErrorMsg('Pegawai master belum tersinkron. Klik Sinkronkan Ulang.');
     }
   };
 
@@ -1650,50 +1089,38 @@ export default function App() {
         setHasUnsyncedLocal(true);
         showToast('Pegawai master dihapus.');
 
-        if (user && user.emailVerified) {
-          setSyncState('syncing');
-          try {
-            const profileOk = await ensureUserProfile(user);
-            if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
-            await deleteDoc(doc(db, 'users', user.uid, 'employees', safeId));
-            cloudEmpIdsRef.current.delete(safeId);
-            if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
-              await setDoc(
-                doc(db, 'users', user.uid, 'history', newEntry.id),
-                buildHistoryPayload(newEntry, user.uid)
-              );
-              cloudHistoryIdsRef.current.add(newEntry.id);
-            }
-            const cleanedPending: PendingCloudMutations = {
-              ...envelopeRef.current.pendingMutations,
-              deletedEmpIds: envelopeRef.current.pendingMutations.deletedEmpIds.filter(
-                (id) => id !== safeId
-              ),
-              dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
-                (id) => id !== newEntry.id
-              ),
-            };
-            const stillPending = hasAnyPendingMutation(cleanedPending);
-            setPendingMutations(cleanedPending);
-            setHasUnsyncedLocal(stillPending);
-            setSyncErrorMsg('');
-            setSyncState('synced');
-            persistEnvelope(
-              envelopeRef.current.state,
-              envelopeRef.current.activeTab,
-              envelopeRef.current.historyLog,
-              stillPending,
-              cleanedPending
-            );
-          } catch (error) {
-            setSyncState('offline');
-            setSyncErrorMsg('Penghapusan pegawai belum tersinkron ke Cloud. Klik Sinkronkan Ulang.');
-            logAndCaptureFirestoreError(
-              error,
-              OperationType.DELETE,
-              `users/${user.uid}/employees/${safeId}`
-            );
-          }
+        setSyncState('syncing');
+        try {
+          await apiRequest(`/api/employees/${encodeURIComponent(safeId)}`, {
+            method: 'DELETE',
+            body: JSON.stringify({ historyEntry: newEntry }),
+          });
+
+          const cleanedPending: PendingCloudMutations = {
+            ...envelopeRef.current.pendingMutations,
+            deletedEmpIds: envelopeRef.current.pendingMutations.deletedEmpIds.filter(
+              (id) => id !== safeId
+            ),
+            dirtyHistoryIds: envelopeRef.current.pendingMutations.dirtyHistoryIds.filter(
+              (id) => id !== newEntry.id
+            ),
+          };
+          const stillPending = hasAnyPendingMutation(cleanedPending);
+          setPendingMutations(cleanedPending);
+          setHasUnsyncedLocal(stillPending);
+          setSyncErrorMsg('');
+          setSyncState('synced');
+          persistEnvelope(
+            envelopeRef.current.state,
+            envelopeRef.current.activeTab,
+            envelopeRef.current.historyLog,
+            stillPending,
+            cleanedPending
+          );
+        } catch (error) {
+          console.error('Delete employee failed:', error);
+          setSyncState('offline');
+          setSyncErrorMsg('Penghapusan pegawai belum tersinkron. Klik Sinkronkan Ulang.');
         }
       },
     });
@@ -1754,60 +1181,24 @@ export default function App() {
       setHasUnsyncedLocal(true);
       showToast('Data berhasil dipulihkan dari file JSON.');
 
-      if (user && user.emailVerified) {
-        setSyncState('syncing');
-        try {
-          const profileOk = await ensureUserProfile(user);
-          if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
-          const ops: BatchOp[] = [];
-          nextState.transactions.forEach((tx) => {
-            const sid = sanitizeFirestoreId(tx.id);
-            const ref = doc(db, 'users', user.uid, 'transactions', sid);
-            if (cloudTxIdsRef.current.has(sid)) {
-              ops.push({ kind: 'update', ref, data: buildTxPayload(tx, user.uid, false) });
-            } else {
-              ops.push({ kind: 'set', ref, data: buildTxPayload(tx, user.uid, true) });
-              cloudTxIdsRef.current.add(sid);
-            }
-          });
-          nextState.masterEmployees.forEach((emp) => {
-            const sid = sanitizeFirestoreId(emp.id);
-            const ref = doc(db, 'users', user.uid, 'employees', sid);
-            if (cloudEmpIdsRef.current.has(sid)) {
-              ops.push({ kind: 'update', ref, data: buildEmployeePayload(emp, user.uid, false) });
-            } else {
-              ops.push({ kind: 'set', ref, data: buildEmployeePayload(emp, user.uid, true) });
-              cloudEmpIdsRef.current.add(sid);
-            }
-          });
-          if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
-            ops.push({
-              kind: 'set',
-              ref: doc(db, 'users', user.uid, 'history', newEntry.id),
-              data: buildHistoryPayload(newEntry, user.uid),
-            });
-            cloudHistoryIdsRef.current.add(newEntry.id);
-          }
-          const cfgRef = doc(db, 'users', user.uid, 'settings', 'config');
-          if (cloudConfigExistsRef.current) {
-            ops.push({ kind: 'update', ref: cfgRef, data: buildSettingsPayload(nextState, user.uid, false) });
-          } else {
-            ops.push({ kind: 'set', ref: cfgRef, data: buildSettingsPayload(nextState, user.uid, true) });
-            cloudConfigExistsRef.current = true;
-          }
-          await commitBatchChunks(ops);
-          const cleared = { ...EMPTY_PENDING_MUTATIONS };
-          setPendingMutations(cleared);
-          setHasUnsyncedLocal(false);
-          setSyncErrorMsg('');
-          setSyncState('synced');
-          persistEnvelope(nextState, activeTab, nextHistory, false, cleared);
-        } catch (err) {
-          setSyncState('offline');
-          setSyncErrorMsg('Data JSON tersimpan di perangkat, tetapi sinkronisasi ke Cloud gagal.');
-          logAndCaptureFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
-          showToast('Data dipulihkan di perangkat, tetapi sinkronisasi Cloud gagal.');
-        }
+      setSyncState('syncing');
+      try {
+        await apiRequest('/api/workspace/import', {
+          method: 'POST',
+          body: JSON.stringify({ state: nextState, historyEntry: newEntry }),
+        });
+
+        const cleared = { ...EMPTY_PENDING_MUTATIONS };
+        setPendingMutations(cleared);
+        setHasUnsyncedLocal(false);
+        setSyncErrorMsg('');
+        setSyncState('synced');
+        persistEnvelope(nextState, activeTab, nextHistory, false, cleared);
+      } catch (err) {
+        console.error('Import JSON sync failed:', err);
+        setSyncState('offline');
+        setSyncErrorMsg('Data JSON tersimpan di perangkat, tetapi sinkronisasi tertunda.');
+        showToast('Data dipulihkan di perangkat, sinkronisasi tertunda.');
       }
     };
     reader.readAsText(file);
@@ -1844,67 +1235,23 @@ export default function App() {
         setEditingTx(null);
         showToast('Seluruh data dikembalikan ke pengaturan awal 2026.');
 
-        if (user && user.emailVerified) {
-          setSyncState('syncing');
-          try {
-            const profileOk = await ensureUserProfile(user);
-            if (!profileOk) throw new Error('Profil pengguna Cloud tidak tersedia');
-            const [curTx, curEmp] = await Promise.all([
-              getDocs(query(collection(db, 'users', user.uid, 'transactions'), where('ownerId', '==', user.uid))),
-              getDocs(query(collection(db, 'users', user.uid, 'employees'), where('ownerId', '==', user.uid))),
-            ]);
-            const ops: BatchOp[] = [];
-            curTx.docs.forEach((d) => ops.push({ kind: 'delete', ref: d.ref }));
-            curEmp.docs.forEach((d) => ops.push({ kind: 'delete', ref: d.ref }));
-            const nextTxIds = new Set<string>();
-            const nextEmpIds = new Set<string>();
-            fresh.transactions.forEach((tx) => {
-              const sid = sanitizeFirestoreId(tx.id);
-              ops.push({
-                kind: 'set',
-                ref: doc(db, 'users', user.uid, 'transactions', sid),
-                data: buildTxPayload(tx, user.uid, true),
-              });
-              nextTxIds.add(sid);
-            });
-            fresh.masterEmployees.forEach((emp) => {
-              const sid = sanitizeFirestoreId(emp.id);
-              ops.push({
-                kind: 'set',
-                ref: doc(db, 'users', user.uid, 'employees', sid),
-                data: buildEmployeePayload(emp, user.uid, true),
-              });
-              nextEmpIds.add(sid);
-            });
-            if (!cloudHistoryIdsRef.current.has(newEntry.id)) {
-              ops.push({
-                kind: 'set',
-                ref: doc(db, 'users', user.uid, 'history', newEntry.id),
-                data: buildHistoryPayload(newEntry, user.uid),
-              });
-              cloudHistoryIdsRef.current.add(newEntry.id);
-            }
-            const cfgRef = doc(db, 'users', user.uid, 'settings', 'config');
-            if (cloudConfigExistsRef.current) {
-              ops.push({ kind: 'update', ref: cfgRef, data: buildSettingsPayload(fresh, user.uid, false) });
-            } else {
-              ops.push({ kind: 'set', ref: cfgRef, data: buildSettingsPayload(fresh, user.uid, true) });
-              cloudConfigExistsRef.current = true;
-            }
-            await commitBatchChunks(ops);
-            cloudTxIdsRef.current = nextTxIds;
-            cloudEmpIdsRef.current = nextEmpIds;
-            const cleared = { ...EMPTY_PENDING_MUTATIONS };
-            setPendingMutations(cleared);
-            setHasUnsyncedLocal(false);
-            setSyncErrorMsg('');
-            setSyncState('synced');
-            persistEnvelope(fresh, activeTab, nextHistory, false, cleared);
-          } catch (error) {
-            setSyncState('offline');
-            setSyncErrorMsg('Reset belum tersinkron ke Cloud. Klik Sinkronkan Ulang.');
-            logAndCaptureFirestoreError(error, OperationType.WRITE, `users/${user.uid}`);
-          }
+        setSyncState('syncing');
+        try {
+          await apiRequest('/api/workspace/reset', {
+            method: 'POST',
+            body: JSON.stringify({ state: fresh, historyEntry: newEntry }),
+          });
+
+          const cleared = { ...EMPTY_PENDING_MUTATIONS };
+          setPendingMutations(cleared);
+          setHasUnsyncedLocal(false);
+          setSyncErrorMsg('');
+          setSyncState('synced');
+          persistEnvelope(fresh, activeTab, nextHistory, false, cleared);
+        } catch (error) {
+          console.error('Reset sync failed:', error);
+          setSyncState('offline');
+          setSyncErrorMsg('Reset belum tersinkron. Klik Sinkronkan Ulang.');
         }
       },
     });
@@ -2023,34 +1370,17 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-2 shrink-0">
-            {!authReady ? null : user ? (
-              <div className="flex items-center gap-2">
-                <div className="hidden sm:block text-right">
-                  <div className="text-xs font-semibold text-white truncate max-w-[140px]">
-                    {user.displayName || 'Akun Cloud'}
-                  </div>
-                  <div className="text-[10px] text-emerald-400 truncate max-w-[140px]">{user.email}</div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
-                  title="Keluar dari akun Cloud"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span>Keluar</span>
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
-              >
-                <LogIn className="w-3.5 h-3.5" />
-                <span>Sinkron Cloud</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => void refreshFromCloud(true)}
+              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition"
+              title="Muat ulang data terbaru antar perangkat"
+            >
+              <RefreshCw
+                className={`w-3.5 h-3.5 ${syncState === 'syncing' ? 'animate-spin text-blue-400' : 'text-emerald-400'}`}
+              />
+              <span>Segarkan</span>
+            </button>
           </div>
         </div>
 
@@ -2138,7 +1468,8 @@ export default function App() {
                 <>
                   <Cloud className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                   <span>
-                    Tersimpan otomatis di Cloud{lastSavedTimeStr ? ` · ${lastSavedTimeStr}` : ''}
+                    Sinkron Otomatis Aktif · {appState.transactions.length} entri
+                    {lastSavedTimeStr ? ` · ${lastSavedTimeStr}` : ''}
                   </span>
                 </>
               ) : syncState === 'syncing' ? (
@@ -2151,33 +1482,24 @@ export default function App() {
                   <CloudOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                   <span>
                     {initialBoot.localStorageWritable || idbWritable
-                      ? 'Tersimpan di perangkat (Cloud luring)'
-                      : 'Cloud luring · Simpan lokal terbatas'}
+                      ? 'Tersimpan di perangkat (Luring)'
+                      : 'Koneksi sinkronisasi terputus'}
                     {lastSavedTimeStr ? ` · ${lastSavedTimeStr}` : ''}
                   </span>
-                  {user && (
-                    <button
-                      type="button"
-                      onClick={() => void flushPendingMutations()}
-                      className="ml-1 px-2 py-0.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 font-semibold flex items-center gap-1 transition"
-                    >
-                      <RefreshCw className="w-3 h-3" />
-                      Sinkronkan Ulang
-                    </button>
-                  )}
-                </>
-              ) : initialBoot.localStorageWritable || idbWritable ? (
-                <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>
-                    Tersimpan di perangkat ini{lastSavedTimeStr ? ` · ${lastSavedTimeStr}` : ''}
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void refreshFromCloud(true)}
+                    className="ml-1 px-2 py-0.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 font-semibold flex items-center gap-1 transition"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    Sinkronkan Ulang
+                  </button>
                 </>
               ) : (
                 <>
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span className="text-amber-800 font-medium">
-                    Penyimpanan browser diblokir · Aktifkan Sinkron Cloud
+                  <Cloud className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                  <span className="text-slate-600">
+                    {authReady ? 'Menghubungkan sinkronisasi...' : 'Menyiapkan sinkronisasi otomatis...'}
                   </span>
                 </>
               )}
@@ -2186,86 +1508,21 @@ export default function App() {
         </div>
       </div>
 
-      {/* Warning Banner when browser restricts local persistence OR Cloud sync/login encounters an error */}
-      {((!initialBoot.localStorageWritable && idbWritable === false && !user) || syncErrorMsg) && (
+      {/* Warning Banner when sync encounters an offline error */}
+      {syncErrorMsg && syncState === 'offline' && (
         <div className="bg-amber-50 border-b border-amber-200 px-3 sm:px-6 py-2.5 no-print">
           <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-amber-900">
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>
-                {syncErrorMsg ||
-                  'Browser di komputer ini membatasi penyimpanan lokal. Masuk dengan Google agar data tersimpan permanen di Cloud dan bisa dibuka dari komputer lain.'}
-              </span>
+              <span>{syncErrorMsg}</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
-              {unauthorizedHost && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void handleCopyUnauthorizedHost()}
-                    className="min-h-[36px] px-3 py-1.5 rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 font-semibold whitespace-nowrap flex items-center gap-1.5 transition"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    Salin Domain
-                  </button>
-                  <a
-                    href={`https://console.firebase.google.com/project/${firebaseProjectId}/authentication/settings`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="min-h-[36px] px-3 py-1.5 rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 font-semibold whitespace-nowrap flex items-center gap-1.5 transition"
-                  >
-                    <ExternalLink className="w-3.5 h-3.5" />
-                    Atur Domain Firebase
-                  </a>
-                </>
-              )}
-              {typeof window !== 'undefined' && !unauthorizedHost && (
-                <a
-                  href={window.location.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="min-h-[36px] px-3 py-1.5 rounded-lg border border-amber-300 bg-white hover:bg-amber-100 text-amber-900 font-semibold whitespace-nowrap flex items-center gap-1.5 transition"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  Buka di Tab Baru
-                </a>
-              )}
-              {!user ? (
-                <button
-                  type="button"
-                  onClick={handleGoogleSignIn}
-                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap"
-                >
-                  {unauthorizedHost ? 'Coba Login Lagi' : 'Aktifkan Sinkron Cloud'}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void flushPendingMutations()}
-                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap flex items-center gap-1.5"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Sinkronkan Ulang
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Subtle info strip when working locally without Cloud sign-in */}
-      {authReady && !user && !syncErrorMsg && (initialBoot.localStorageWritable || idbWritable !== false) && (
-        <div className="bg-blue-50/80 border-b border-blue-100 px-3 sm:px-6 py-2 no-print">
-          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-blue-900">
-            <span>
-              Mode Simpan Perangkat: data tersimpan otomatis di browser komputer ini. Untuk membuka dan menyimpan data yang sama di komputer lain, masuk dengan Google.
-            </span>
             <button
               type="button"
-              onClick={handleGoogleSignIn}
-              className="min-h-[32px] px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold whitespace-nowrap self-start sm:self-auto"
+              onClick={() => void refreshFromCloud(true)}
+              className="min-h-[36px] px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold whitespace-nowrap flex items-center gap-1.5 self-start sm:self-auto"
             >
-              Masuk Google (Sinkron Cloud)
+              <RefreshCw className="w-3.5 h-3.5" />
+              Sinkronkan Ulang
             </button>
           </div>
         </div>

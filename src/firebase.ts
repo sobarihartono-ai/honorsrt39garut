@@ -1,20 +1,17 @@
 import { initializeApp } from 'firebase/app';
 import {
-  GoogleAuthProvider,
+  User,
   browserLocalPersistence,
   getAuth,
   setPersistence,
+  signInAnonymously,
 } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 
 export const firebaseProjectId = firebaseConfig.projectId;
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 export const authPersistenceReady: Promise<void> = setPersistence(
   auth,
@@ -23,67 +20,19 @@ export const authPersistenceReady: Promise<void> = setPersistence(
   // Browser or iframe blocks persistent auth storage; falls back to in-memory session
 });
 
-export enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
+let pendingAnonSignIn: Promise<User | null> | null = null;
 
-export interface FirestoreErrorInfo {
-  error: string;
-  operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
-  };
-}
-
-export function handleFirestoreError(
-  error: unknown,
-  operationType: OperationType,
-  path: string | null
-): never {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
-          providerId: provider.providerId,
-          email: provider.email,
-        })) || [],
-    },
-    operationType,
-    path,
-  };
-  console.error('Firestore Error:', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
-
-export async function testConnection(): Promise<boolean> {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    return true;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Firebase client is offline. Periksa konfigurasi atau koneksi internet.');
-      return false;
-    }
-    return true;
+export async function ensureAnonymousSession(): Promise<User | null> {
+  await authPersistenceReady;
+  if (auth.currentUser) {
+    return auth.currentUser;
   }
+  if (!pendingAnonSignIn) {
+    pendingAnonSignIn = signInAnonymously(auth)
+      .then((cred) => cred.user)
+      .finally(() => {
+        pendingAnonSignIn = null;
+      });
+  }
+  return pendingAnonSignIn;
 }

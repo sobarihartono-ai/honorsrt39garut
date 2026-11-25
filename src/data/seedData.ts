@@ -1,4 +1,4 @@
-import { AppState, MasterEmployee, Officials, Transaction } from '../types';
+import type { AppState, MasterEmployee, Officials, Transaction } from '../types.ts';
 
 export const MONTHS = [
   'Januari',
