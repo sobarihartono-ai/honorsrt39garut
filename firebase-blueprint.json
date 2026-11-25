@@ -1,0 +1,248 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Profil pengguna terautentikasi untuk sinkronisasi data SPJ SRT 39 Garut",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "displayName", "createdAt", "updatedAt"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Entri transaksi daftar hadir, honorarium, atau uang transpor",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["ekskul", "gurutamu", "lainnya"],
+          "maxLength": 20
+        },
+        "bulan": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "noBukti": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "tanggal": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "nama": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "jenjang": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "jenis": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "jabatan": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "tarif": {
+          "type": "number"
+        },
+        "jamlat": {
+          "type": "number"
+        },
+        "pajakRate": {
+          "type": "number"
+        },
+        "customRangka": {
+          "type": "string",
+          "maxLength": 250
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "category",
+        "bulan",
+        "noBukti",
+        "tanggal",
+        "nama",
+        "jenjang",
+        "jenis",
+        "status",
+        "jabatan",
+        "tarif",
+        "jamlat",
+        "pajakRate",
+        "customRangka",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MasterEmployee": {
+      "title": "MasterEmployee",
+      "description": "Master data pegawai, instruktur ekstrakurikuler, atau guru tamu",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["ekskul", "gurutamu", "lainnya"],
+          "maxLength": 20
+        },
+        "nama": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "jenis": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "jenjang": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "status": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "jabatan": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "tarif": {
+          "type": "number"
+        },
+        "pajakRate": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "category",
+        "nama",
+        "jenis",
+        "jenjang",
+        "status",
+        "jabatan",
+        "tarif",
+        "pajakRate",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Pengaturan pejabat penandatangan dan judul dokumen khusus",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ppkName": { "type": "string", "maxLength": 120 },
+        "ppkNip": { "type": "string", "maxLength": 60 },
+        "bendName": { "type": "string", "maxLength": 120 },
+        "bendNip": { "type": "string", "maxLength": 60 },
+        "kepsekName": { "type": "string", "maxLength": 120 },
+        "kepsekNip": { "type": "string", "maxLength": 60 },
+        "customMainTitle": { "type": "string", "maxLength": 200 },
+        "customActivityTitle": { "type": "string", "maxLength": 250 },
+        "currentMonth": { "type": "string", "maxLength": 30 },
+        "currentCategory": {
+          "type": "string",
+          "enum": ["ekskul", "gurutamu", "lainnya"],
+          "maxLength": 20
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "ppkName",
+        "ppkNip",
+        "bendName",
+        "bendNip",
+        "kepsekName",
+        "kepsekNip",
+        "customMainTitle",
+        "customActivityTitle",
+        "currentMonth",
+        "currentCategory",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Profil pemilik akun"
+    },
+    "/users/{userId}/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/Transaction" },
+      "description": "Transaksi honorarium dan uang transpor milik pengguna"
+    },
+    "/users/{userId}/employees/{empId}": {
+      "schema": { "$ref": "#/entities/MasterEmployee" },
+      "description": "Daftar master pegawai milik pengguna"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AppSettings" },
+      "description": "Konfigurasi pejabat penandatangan dan judul khusus milik pengguna"
+    }
+  }
+}

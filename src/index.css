@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+
+  .font-mono-num {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Official A4 Landscape Paper Styles for Print & Document Preview */
+.excel-sheet-wrapper {
+  background: #ffffff;
+  padding: 14mm 16mm;
+  box-shadow: 0 4px 20px -4px rgba(15, 23, 42, 0.08);
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  margin: 0 auto 24px auto;
+  width: 297mm;
+  min-height: 190mm;
+  font-family: 'Times New Roman', Times, serif;
+  color: #000000;
+  box-sizing: border-box;
+}
+
+.excel-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.excel-table th,
+.excel-table td {
+  border: 1px solid #000000;
+  padding: 6px 8px;
+  vertical-align: middle;
+}
+
+.excel-table th {
+  font-weight: bold;
+  text-align: center;
+}
+
+.page-break {
+  page-break-after: always;
+  break-after: page;
+}
+
+/* Safe area padding for iPhone/Android gesture bars */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 8mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+  }
+
+  body > *:not(#print-portal-root) {
+    display: none !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .excel-sheet-wrapper {
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    min-height: auto !important;
+  }
+
+  .excel-table {
+    width: 100% !important;
+    table-layout: fixed !important;
+    font-size: 8.8pt !important;
+  }
+
+  .excel-table th,
+  .excel-table td {
+    padding: 5px 5px !important;
+    word-wrap: break-word !important;
+  }
+}

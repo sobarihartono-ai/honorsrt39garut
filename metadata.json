@@ -1,0 +1,6 @@
+{
+  "name": "SPJ Honor & Transpor SRT 39 Garut",
+  "description": "Sistem Administrasi Daftar Hadir, Rekapitulasi, dan Tanda Terima SPJ Honorarium & Transpor Sekolah Rakyat Terintegrasi (SRT) 39 Garut Tahun Anggaran 2026.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

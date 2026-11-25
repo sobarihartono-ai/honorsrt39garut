@@ -1,0 +1,221 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function parentUserExists(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function isValidCategory(cat) {
+      return cat is string && cat.size() <= 20 && cat in ['ekskul', 'gurutamu', 'lainnya'];
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() <= 128 && data.uid == userId && data.uid == request.auth.uid
+        && data.email is string && data.email.size() <= 200
+        && data.displayName is string && data.displayName.size() <= 150
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll([
+          'ownerId', 'category', 'bulan', 'noBukti', 'tanggal',
+          'nama', 'jenjang', 'jenis', 'status', 'jabatan',
+          'tarif', 'jamlat', 'pajakRate', 'customRangka',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'category', 'bulan', 'noBukti', 'tanggal',
+          'nama', 'jenjang', 'jenis', 'status', 'jabatan',
+          'tarif', 'jamlat', 'pajakRate', 'customRangka',
+          'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string && data.ownerId.size() <= 128 && data.ownerId == request.auth.uid
+        && isValidCategory(data.category)
+        && data.bulan is string && data.bulan.size() >= 1 && data.bulan.size() <= 30
+        && data.noBukti is string && data.noBukti.size() >= 1 && data.noBukti.size() <= 80
+        && data.tanggal is string && data.tanggal.size() >= 1 && data.tanggal.size() <= 60
+        && data.nama is string && data.nama.size() >= 1 && data.nama.size() <= 120
+        && data.jenjang is string && data.jenjang.size() >= 1 && data.jenjang.size() <= 40
+        && data.jenis is string && data.jenis.size() >= 1 && data.jenis.size() <= 100
+        && data.status is string && data.status.size() >= 1 && data.status.size() <= 60
+        && data.jabatan is string && data.jabatan.size() >= 1 && data.jabatan.size() <= 100
+        && data.tarif is number && data.tarif >= 0 && data.tarif <= 100000000
+        && data.jamlat is number && data.jamlat >= 1 && data.jamlat <= 1000
+        && data.pajakRate is number && data.pajakRate >= 0 && data.pajakRate <= 1
+        && data.customRangka is string && data.customRangka.size() <= 250
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEmployee(data) {
+      return data.keys().hasAll([
+          'ownerId', 'category', 'nama', 'jenis', 'jenjang',
+          'status', 'jabatan', 'tarif', 'pajakRate',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'category', 'nama', 'jenis', 'jenjang',
+          'status', 'jabatan', 'tarif', 'pajakRate',
+          'createdAt', 'updatedAt'
+        ])
+        && data.ownerId is string && data.ownerId.size() <= 128 && data.ownerId == request.auth.uid
+        && isValidCategory(data.category)
+        && data.nama is string && data.nama.size() >= 1 && data.nama.size() <= 120
+        && data.jenis is string && data.jenis.size() >= 1 && data.jenis.size() <= 100
+        && data.jenjang is string && data.jenjang.size() >= 1 && data.jenjang.size() <= 40
+        && data.status is string && data.status.size() >= 1 && data.status.size() <= 60
+        && data.jabatan is string && data.jabatan.size() >= 1 && data.jabatan.size() <= 100
+        && data.tarif is number && data.tarif >= 0 && data.tarif <= 100000000
+        && data.pajakRate is number && data.pajakRate >= 0 && data.pajakRate <= 1
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll([
+          'ownerId', 'ppkName', 'ppkNip', 'bendName', 'bendNip',
+          'kepsekName', 'kepsekNip', 'customMainTitle', 'customActivityTitle',
+          'currentMonth', 'currentCategory', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'ppkName', 'ppkNip', 'bendName', 'bendNip',
+          'kepsekName', 'kepsekNip', 'customMainTitle', 'customActivityTitle',
+          'currentMonth', 'currentCategory', 'updatedAt'
+        ])
+        && data.ownerId is string && data.ownerId.size() <= 128 && data.ownerId == request.auth.uid
+        && data.ppkName is string && data.ppkName.size() <= 120
+        && data.ppkNip is string && data.ppkNip.size() <= 60
+        && data.bendName is string && data.bendName.size() <= 120
+        && data.bendNip is string && data.bendNip.size() <= 60
+        && data.kepsekName is string && data.kepsekName.size() <= 120
+        && data.kepsekNip is string && data.kepsekNip.size() <= 60
+        && data.customMainTitle is string && data.customMainTitle.size() <= 200
+        && data.customActivityTitle is string && data.customActivityTitle.size() <= 250
+        && data.currentMonth is string && data.currentMonth.size() >= 1 && data.currentMonth.size() <= 30
+        && isValidCategory(data.currentCategory)
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt']);
+      allow delete: if false;
+
+      match /transactions/{txId} {
+        allow get: if isValidId(userId) && isValidId(txId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(txId)
+          && isOwner(userId)
+          && isValidTransaction(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && parentUserExists(userId);
+        allow update: if isValidId(userId) && isValidId(txId)
+          && isOwner(userId)
+          && isValidTransaction(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && parentUserExists(userId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'category', 'bulan', 'noBukti', 'tanggal', 'nama',
+            'jenjang', 'jenis', 'status', 'jabatan', 'tarif',
+            'jamlat', 'pajakRate', 'customRangka', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(txId) && isOwner(userId);
+      }
+
+      match /employees/{empId} {
+        allow get: if isValidId(userId) && isValidId(empId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(empId)
+          && isOwner(userId)
+          && isValidEmployee(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && parentUserExists(userId);
+        allow update: if isValidId(userId) && isValidId(empId)
+          && isOwner(userId)
+          && isValidEmployee(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && parentUserExists(userId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'category', 'nama', 'jenis', 'jenjang', 'status',
+            'jabatan', 'tarif', 'pajakRate', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(empId) && isOwner(userId);
+      }
+
+      match /settings/{settingId} {
+        allow get: if isValidId(userId) && isValidId(settingId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().ownerId == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(settingId)
+          && isOwner(userId)
+          && settingId == 'config'
+          && isValidSettings(incoming())
+          && incoming().updatedAt == request.time
+          && parentUserExists(userId);
+        allow update: if isValidId(userId) && isValidId(settingId)
+          && isOwner(userId)
+          && settingId == 'config'
+          && isValidSettings(incoming())
+          && incoming().ownerId == existing().ownerId
+          && incoming().updatedAt == request.time
+          && parentUserExists(userId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'ppkName', 'ppkNip', 'bendName', 'bendNip',
+            'kepsekName', 'kepsekNip', 'customMainTitle', 'customActivityTitle',
+            'currentMonth', 'currentCategory', 'updatedAt'
+          ]);
+        allow delete: if isValidId(userId) && isValidId(settingId) && isOwner(userId);
+      }
+    }
+  }
+}
