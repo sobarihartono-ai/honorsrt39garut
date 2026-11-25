@@ -150,18 +150,47 @@ interface WorkspaceApiResponse {
   historyLog: HistoryEntry[];
 }
 
+function formatSyncErrorMessage(error: unknown): string {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code || '')
+      : '';
+  const msg = error instanceof Error ? error.message : String(error || '');
+
+  if (code === 'auth/operation-not-allowed') {
+    return 'Login anonim belum diaktifkan di Firebase Console.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Gagal terhubung ke layanan autentikasi. Periksa koneksi internet Anda.';
+  }
+  if (msg.includes('Sesi pratinjau')) {
+    return msg;
+  }
+  if (
+    error instanceof TypeError ||
+    msg.toLowerCase().includes('failed to fetch') ||
+    msg.toLowerCase().includes('networkerror')
+  ) {
+    return 'Tidak dapat menjangkau server. Periksa koneksi internet Anda lalu coba lagi.';
+  }
+  if (msg) {
+    return msg;
+  }
+  return 'Gagal memuat pembaruan. Silakan coba sinkronkan ulang.';
+}
+
 async function apiRequest<T = { ok: boolean }>(
   path: string,
   options: RequestInit = {},
   targetUser?: User | null
 ): Promise<T> {
-  const activeUser = targetUser || auth.currentUser || (await ensureAnonymousSession());
+  let activeUser = targetUser || auth.currentUser || (await ensureAnonymousSession());
   if (!activeUser) {
     throw new Error('Sesi sinkronisasi otomatis belum siap.');
   }
 
-  const doFetch = async (forceRefresh: boolean) => {
-    const token = await activeUser.getIdToken(forceRefresh);
+  const doFetch = async (u: User, forceRefresh: boolean) => {
+    const token = await u.getIdToken(forceRefresh);
     const headers = new Headers(options.headers);
     headers.set('Authorization', `Bearer ${token}`);
     if (options.body && !headers.has('Content-Type')) {
@@ -170,16 +199,38 @@ async function apiRequest<T = { ok: boolean }>(
     return fetch(path, {
       ...options,
       headers,
+      credentials: 'same-origin',
     });
   };
 
-  let res = await doFetch(false);
+  let res = await doFetch(activeUser, false);
   if (res.status === 401) {
-    res = await doFetch(true);
+    try {
+      res = await doFetch(activeUser, true);
+    } catch {
+      // fallback to a fresh anonymous session below
+    }
+  }
+  if (res.status === 401) {
+    const freshAnon = await ensureAnonymousSession(true);
+    if (freshAnon) {
+      activeUser = freshAnon;
+      res = await doFetch(freshAnon, false);
+    }
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    if (res.redirected || contentType.includes('text/html')) {
+      throw new Error(
+        'Sesi pratinjau browser memblokir permintaan latar belakang. Coba buka aplikasi di tab baru.'
+      );
+    }
+    throw new Error(`Server belum siap (kode ${res.status}). Silakan coba sinkronkan ulang.`);
   }
 
   if (!res.ok) {
-    let errMsg = 'Gagal terhubung ke server sinkronisasi.';
+    let errMsg = `Server mengembalikan kesalahan (${res.status}). Silakan coba sinkronkan ulang.`;
     try {
       const parsed = (await res.json()) as { error?: string };
       if (parsed?.error) errMsg = parsed.error;
@@ -226,7 +277,7 @@ export default function App() {
   const envelopeRef = useRef<PersistedEnvelope>(initialBoot.envelope);
   const hasUserChangedFilterRef = useRef<boolean>(false);
   const appliedInitialCloudSettingsRef = useRef<boolean>(false);
-  const syncInFlightRef = useRef<boolean>(false);
+  const inFlightRefreshRef = useRef<Promise<boolean> | null>(null);
   const lastRefreshAtRef = useRef<number>(0);
 
   const [confirmState, setConfirmState] = useState<{
@@ -514,59 +565,71 @@ export default function App() {
 
   const refreshFromCloud = useCallback(
     async (showSuccessToast = true, targetUser?: User | null): Promise<boolean> => {
-      if (syncInFlightRef.current) return true;
+      if (inFlightRefreshRef.current) {
+        const ok = await inFlightRefreshRef.current;
+        if (showSuccessToast && ok) {
+          showToast(
+            `Sinkronisasi selesai: ${envelopeRef.current.state.transactions.length} entri SPJ & ${envelopeRef.current.historyLog.length} riwayat.`
+          );
+        }
+        return ok;
+      }
       const now = Date.now();
       if (!showSuccessToast && now - lastRefreshAtRef.current < 4000) {
         return true;
       }
       lastRefreshAtRef.current = now;
-      syncInFlightRef.current = true;
-      if (showSuccessToast) {
+
+      const run = (async (): Promise<boolean> => {
         setSyncState('syncing');
-      }
+        try {
+          const activeUser = targetUser || user || (await ensureAnonymousSession());
+          if (!activeUser) {
+            throw new Error('Sesi sinkronisasi otomatis belum siap.');
+          }
 
-      try {
-        const activeUser = targetUser || user || (await ensureAnonymousSession());
-        if (!activeUser) {
-          throw new Error('Koneksi sinkronisasi belum siap.');
-        }
+          if (hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
+            await flushPendingMutations(activeUser);
+          }
 
-        if (hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
-          await flushPendingMutations(activeUser);
-        }
-
-        const snapshot = await apiRequest<WorkspaceApiResponse>(
-          '/api/workspace',
-          { method: 'GET' },
-          activeUser
-        );
-        const { mergedTx, mergedHist } = applyServerSnapshot(snapshot);
-        if (showSuccessToast) {
-          showToast(
-            `Sinkronisasi selesai: ${mergedTx.length} entri SPJ & ${mergedHist.length} riwayat.`
+          const snapshot = await apiRequest<WorkspaceApiResponse>(
+            '/api/workspace',
+            { method: 'GET' },
+            activeUser
           );
+          const { mergedTx, mergedHist } = applyServerSnapshot(snapshot);
+          if (showSuccessToast) {
+            showToast(
+              `Sinkronisasi selesai: ${mergedTx.length} entri SPJ & ${mergedHist.length} riwayat.`
+            );
+          }
+          return true;
+        } catch (error) {
+          console.error('Refresh workspace failed:', error);
+          const readableErr = formatSyncErrorMessage(error);
+          setSyncState('offline');
+          if (showSuccessToast || !syncErrorMsg) {
+            setSyncErrorMsg(readableErr);
+          }
+          if (showSuccessToast) {
+            showToast(readableErr);
+          }
+          return false;
+        } finally {
+          inFlightRefreshRef.current = null;
         }
-        return true;
-      } catch (error) {
-        console.error('Refresh workspace failed:', error);
-        setSyncState('offline');
-        if (showSuccessToast) {
-          setSyncErrorMsg('Gagal memuat pembaruan. Periksa koneksi internet Anda.');
-          showToast('Gagal menyegarkan data. Periksa koneksi internet.');
-        }
-        return false;
-      } finally {
-        syncInFlightRef.current = false;
-      }
+      })();
+
+      inFlightRefreshRef.current = run;
+      return run;
     },
-    [user, flushPendingMutations, applyServerSnapshot, showToast]
+    [user, syncErrorMsg, flushPendingMutations, applyServerSnapshot, showToast]
   );
 
   // Automatic silent session + initial sync + periodic cross-device polling
   useEffect(() => {
     let unsubAuth: (() => void) | null = null;
     let mounted = true;
-    let initStarted = false;
 
     void authPersistenceReady.finally(() => {
       if (!mounted) return;
@@ -574,22 +637,19 @@ export default function App() {
         if (!mounted) return;
         if (!currentUser) {
           setUser(null);
-          if (!initStarted) {
-            initStarted = true;
-            try {
-              const anonUser = await ensureAnonymousSession();
-              if (!mounted) return;
-              if (!anonUser) {
-                setAuthReady(true);
-                setSyncState('offline');
-              }
-            } catch (err) {
-              console.error('Auto session init failed:', err);
-              if (mounted) {
-                setAuthReady(true);
-                setSyncState('offline');
-                setSyncErrorMsg('Sinkronisasi otomatis sedang luring. Data tetap tersimpan di perangkat.');
-              }
+          try {
+            const anonUser = await ensureAnonymousSession();
+            if (!mounted) return;
+            if (!anonUser) {
+              setAuthReady(true);
+              setSyncState('offline');
+            }
+          } catch (err) {
+            console.error('Auto session init failed:', err);
+            if (mounted) {
+              setAuthReady(true);
+              setSyncState('offline');
+              setSyncErrorMsg(formatSyncErrorMessage(err));
             }
           }
           return;

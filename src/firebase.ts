@@ -13,18 +13,18 @@ const app = initializeApp(firebaseConfig);
 export const firebaseProjectId = firebaseConfig.projectId;
 export const auth = getAuth(app);
 
-export const authPersistenceReady: Promise<void> = setPersistence(
-  auth,
-  browserLocalPersistence
-).catch(() => {
-  // Browser or iframe blocks persistent auth storage; falls back to in-memory session
-});
+export const authPersistenceReady: Promise<void> = Promise.race([
+  setPersistence(auth, browserLocalPersistence).catch(() => {
+    // Browser or iframe blocks persistent auth storage; falls back to in-memory session
+  }),
+  new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+]);
 
 let pendingAnonSignIn: Promise<User | null> | null = null;
 
-export async function ensureAnonymousSession(): Promise<User | null> {
+export async function ensureAnonymousSession(forceNewAnon = false): Promise<User | null> {
   await authPersistenceReady;
-  if (auth.currentUser) {
+  if (!forceNewAnon && auth.currentUser) {
     return auth.currentUser;
   }
   if (!pendingAnonSignIn) {
