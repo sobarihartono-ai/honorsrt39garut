@@ -173,7 +173,7 @@ export function buildVectorPDF(job: PrintJobMeta, ctx: DocContext): jsPDF {
           halign: 'center',
           minCellHeight: 11,
         },
-        bodyStyles: { minCellHeight: 22 },
+        bodyStyles: { minCellHeight: 36 },
         head: [['NO', 'NAMA/NRP', colJenisHeader, 'ASN/NON ASN', 'JABATAN', 'TANDA TANGAN']],
         body: [
           [
@@ -186,12 +186,12 @@ export function buildVectorPDF(job: PrintJobMeta, ctx: DocContext): jsPDF {
           ],
         ],
         columnStyles: {
-          0: { cellWidth: 15 },
-          1: { cellWidth: 66 },
-          2: { cellWidth: 48 },
-          3: { cellWidth: 48 },
-          4: { cellWidth: 50 },
-          5: { cellWidth: 46 },
+          0: { cellWidth: 12 },
+          1: { cellWidth: 60 },
+          2: { cellWidth: 46 },
+          3: { cellWidth: 57 },
+          4: { cellWidth: 49 },
+          5: { cellWidth: 49 },
         },
       });
 
@@ -479,22 +479,22 @@ function renderDaftarHadirHTMLString(tx: Transaction, ctx: DocContext): string {
       <table class="excel-table" style="font-size:10.5pt;">
         <thead>
           <tr>
-            <th style="width:6%; padding:10px 6px;">NO</th>
-            <th style="width:24%; padding:10px 6px;">NAMA/NRP</th>
-            <th style="width:18%; padding:10px 6px;">${escapeHtml(colJenisHeader)}</th>
-            <th style="width:18%; padding:10px 6px;">ASN/NON ASN</th>
+            <th style="width:4%; padding:10px 6px;">NO</th>
+            <th style="width:22%; padding:10px 6px;">NAMA/NRP</th>
+            <th style="width:17%; padding:10px 6px;">${escapeHtml(colJenisHeader)}</th>
+            <th style="width:21%; padding:10px 6px;">ASN/NON ASN</th>
             <th style="width:18%; padding:10px 6px;">JABATAN</th>
-            <th style="width:16%; padding:10px 6px;">TANDA TANGAN</th>
+            <th style="width:18%; padding:10px 6px;">TANDA TANGAN</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td style="text-align:center; font-weight:bold; height:72px;">1</td>
+            <td style="text-align:center; font-weight:bold; height:132px; vertical-align:middle;">1</td>
             <td style="text-align:center;">${escapeHtml(tx.nama)}</td>
             <td style="text-align:center;">${escapeHtml(tx.jenis)}</td>
             <td style="text-align:center;">${escapeHtml(tx.status)}</td>
             <td style="text-align:center; font-weight:bold;">${escapeHtml(tx.jabatan)}</td>
-            <td style="text-align:left; font-weight:bold; padding-left:10px;">1.</td>
+            <td style="text-align:left; font-weight:bold; padding-left:10px; vertical-align:middle;">1.</td>
           </tr>
         </tbody>
       </table>

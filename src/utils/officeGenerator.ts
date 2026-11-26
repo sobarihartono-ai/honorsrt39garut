@@ -4,6 +4,7 @@ import {
   AlignmentType,
   BorderStyle,
   Document,
+  HeightRule,
   Packer,
   PageOrientation,
   Paragraph,
@@ -11,6 +12,7 @@ import {
   TableCell,
   TableRow,
   TextRun,
+  VerticalAlign,
   WidthType,
 } from 'docx';
 import { CategoryType, Officials, PrintJobMeta, Transaction } from '../types';
@@ -183,7 +185,7 @@ function buildDaftarHadirExcelSheet(tx: Transaction, ctx: OfficeDocContext, shee
       { value: 'TANDA TANGAN', fontWeight: 'bold', align: 'center', alignVertical: 'center', borderStyle: 'thin', borderColor: '#000000', fontFamily: 'Times New Roman' },
     ],
     [
-      { value: 1, type: Number, fontWeight: 'bold', align: 'center', alignVertical: 'center', borderStyle: 'thin', borderColor: '#000000', fontFamily: 'Times New Roman', height: 48 },
+      { value: 1, type: Number, fontWeight: 'bold', align: 'center', alignVertical: 'center', borderStyle: 'thin', borderColor: '#000000', fontFamily: 'Times New Roman', height: 100 },
       { value: tx.nama, type: String, align: 'center', alignVertical: 'center', borderStyle: 'thin', borderColor: '#000000', fontFamily: 'Times New Roman' },
       { value: tx.jenis, type: String, align: 'center', alignVertical: 'center', borderStyle: 'thin', borderColor: '#000000', fontFamily: 'Times New Roman' },
       { value: tx.status, type: String, align: 'center', alignVertical: 'center', borderStyle: 'thin', borderColor: '#000000', fontFamily: 'Times New Roman' },
@@ -205,12 +207,12 @@ function buildDaftarHadirExcelSheet(tx: Transaction, ctx: OfficeDocContext, shee
     sheet: sheetName,
     orientation: 'landscape',
     columns: [
-      { width: 8 },
-      { width: 32 },
+      { width: 5 },
+      { width: 30 },
+      { width: 25 },
+      { width: 28 },
+      { width: 25 },
       { width: 26 },
-      { width: 24 },
-      { width: 26 },
-      { width: 24 },
     ],
     data,
   };
@@ -478,6 +480,7 @@ function wordCell(
   opts?: {
     bold?: boolean;
     align?: (typeof AlignmentType)[keyof typeof AlignmentType];
+    verticalAlign?: typeof VerticalAlign.TOP | typeof VerticalAlign.CENTER | typeof VerticalAlign.BOTTOM;
     widthPct?: number;
     colSpan?: number;
     shading?: string;
@@ -489,6 +492,7 @@ function wordCell(
   return new TableCell({
     columnSpan: opts?.colSpan,
     width: opts?.widthPct ? { size: opts.widthPct, type: WidthType.PERCENTAGE } : undefined,
+    verticalAlign: opts?.verticalAlign ?? VerticalAlign.CENTER,
     shading: opts?.shading ? { fill: opts.shading } : undefined,
     borders: opts?.noBorder ? BORDER_NONE : BORDER_THIN,
     margins: { top: 80, bottom: 80, left: 100, right: 100 },
@@ -640,16 +644,18 @@ export async function downloadWordReport(job: PrintJobMeta, ctx: OfficeDocContex
           rows: [
             new TableRow({
               tableHeader: true,
+              height: { value: 520, rule: HeightRule.ATLEAST },
               children: [
-                wordCell('NO', { bold: true, widthPct: 6, sizePt: 10 }),
-                wordCell('NAMA/NRP', { bold: true, widthPct: 24, sizePt: 10 }),
-                wordCell(colJenisHeader, { bold: true, widthPct: 18, sizePt: 10 }),
-                wordCell('ASN/NON ASN', { bold: true, widthPct: 18, sizePt: 10 }),
+                wordCell('NO', { bold: true, widthPct: 4, sizePt: 10 }),
+                wordCell('NAMA/NRP', { bold: true, widthPct: 22, sizePt: 10 }),
+                wordCell(colJenisHeader, { bold: true, widthPct: 17, sizePt: 10 }),
+                wordCell('ASN/NON ASN', { bold: true, widthPct: 21, sizePt: 10 }),
                 wordCell('JABATAN', { bold: true, widthPct: 18, sizePt: 10 }),
-                wordCell('TANDA TANGAN', { bold: true, widthPct: 16, sizePt: 10 }),
+                wordCell('TANDA TANGAN', { bold: true, widthPct: 18, sizePt: 10 }),
               ],
             }),
             new TableRow({
+              height: { value: 1980, rule: HeightRule.ATLEAST },
               children: [
                 wordCell('1', { bold: true, sizePt: 10.5 }),
                 wordCell(tx.nama, { sizePt: 10.5 }),

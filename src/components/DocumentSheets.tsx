@@ -137,24 +137,24 @@ export const DaftarHadirSheet: React.FC<{ tx: Transaction } & SheetContextProps>
       <table className="excel-table" style={{ fontSize: '10.5pt' }}>
         <thead>
           <tr>
-            <th style={{ width: '6%', padding: '10px 6px' }}>NO</th>
-            <th style={{ width: '24%', padding: '10px 6px' }}>NAMA/NRP</th>
-            <th style={{ width: '18%', padding: '10px 6px' }}>{colJenisHeader}</th>
-            <th style={{ width: '18%', padding: '10px 6px' }}>ASN/NON ASN</th>
+            <th style={{ width: '4%', padding: '10px 6px' }}>NO</th>
+            <th style={{ width: '22%', padding: '10px 6px' }}>NAMA/NRP</th>
+            <th style={{ width: '17%', padding: '10px 6px' }}>{colJenisHeader}</th>
+            <th style={{ width: '21%', padding: '10px 6px' }}>ASN/NON ASN</th>
             <th style={{ width: '18%', padding: '10px 6px' }}>JABATAN</th>
-            <th style={{ width: '16%', padding: '10px 6px' }}>TANDA TANGAN</th>
+            <th style={{ width: '18%', padding: '10px 6px' }}>TANDA TANGAN</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td className="text-center font-bold" style={{ height: '72px' }}>
+            <td className="text-center font-bold" style={{ height: '132px', verticalAlign: 'middle' }}>
               1
             </td>
             <td className="text-center">{tx.nama}</td>
             <td className="text-center">{tx.jenis}</td>
             <td className="text-center">{tx.status}</td>
             <td className="text-center font-bold">{tx.jabatan}</td>
-            <td className="text-left font-bold" style={{ paddingLeft: '10px' }}>
+            <td className="text-left font-bold" style={{ paddingLeft: '10px', verticalAlign: 'middle' }}>
               1.
             </td>
           </tr>
