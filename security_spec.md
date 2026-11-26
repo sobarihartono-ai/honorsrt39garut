@@ -20,3 +20,9 @@
 10. Client-forged timestamp: Setting `updatedAt` to a past timestamp instead of `request.time`.
 11. Mutating immutable fields: Attempting to change `ownerId` or `createdAt` on update.
 12. Orphan subcollection write: Creating `/users/{uidA}/transactions/tx-1` when `/users/{uidA}` does not exist.
+
+## 3. Shared Workspace Invariants (`/workspaces/srt39-garut-2026`)
+1. Requires `request.auth != null` (supports silent Anonymous Auth across devices).
+2. Only `workspaceId == 'srt39-garut-2026'` is permitted; subcollection writes verify `parentWorkspaceExists(workspaceId)` and enforce `workspaceId == 'srt39-garut-2026'` in `allow list`.
+3. `createdByUid == request.auth.uid` on create and immutable on update; `updatedByUid == request.auth.uid` on create and update; `createdAt == request.time` on create and immutable on update; `updatedAt == request.time` on create and update.
+4. All fields obey strict `keys().hasAll(...) && keys().hasOnly(...)`, `affectedKeys().hasOnly(...)`, string `.size()` limits, and numeric range bounds.

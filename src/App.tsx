@@ -58,6 +58,19 @@ import {
   saveEnvelopeSync,
   writeIndexedDbEnvelope,
 } from './utils/localPersistence';
+import {
+  batchCreateTransactionsFirestore,
+  deleteEmployeeFirestore,
+  deleteTransactionFirestore,
+  getWorkspaceSnapshotFirestore,
+  replaceWorkspaceDataFirestore,
+  seedFirestoreFromSnapshotIfMissing,
+  subscribeWorkspaceFirestore,
+  syncPendingMutationsFirestore,
+  updateWorkspaceSettingsFirestore,
+  upsertEmployeeFirestore,
+  upsertTransactionFirestore,
+} from './utils/firestoreWorkspace';
 import { downloadExcelReport, downloadWordReport } from './utils/officeGenerator';
 
 function sanitizeCategory(cat: unknown): CategoryType {
@@ -150,6 +163,13 @@ interface WorkspaceApiResponse {
   historyLog: HistoryEntry[];
 }
 
+class ApiRouteUnavailableError extends Error {
+  constructor() {
+    super('API route unavailable on current host');
+    this.name = 'ApiRouteUnavailableError';
+  }
+}
+
 function formatSyncErrorMessage(error: unknown): string {
   const code =
     typeof error === 'object' && error !== null && 'code' in error
@@ -158,13 +178,16 @@ function formatSyncErrorMessage(error: unknown): string {
   const msg = error instanceof Error ? error.message : String(error || '');
 
   if (code === 'auth/operation-not-allowed') {
-    return 'Login anonim belum diaktifkan di Firebase Console.';
+    return 'Login anonim belum diaktifkan pada layanan autentikasi.';
   }
   if (code === 'auth/network-request-failed') {
     return 'Gagal terhubung ke layanan autentikasi. Periksa koneksi internet Anda.';
   }
   if (msg.includes('Sesi pratinjau')) {
     return msg;
+  }
+  if (msg.trim().startsWith('{') && msg.includes('"operationType"')) {
+    return 'Sinkronisasi data tertunda. Silakan klik Sinkronkan Ulang beberapa saat lagi.';
   }
   if (
     error instanceof TypeError ||
@@ -221,6 +244,12 @@ async function apiRequest<T = { ok: boolean }>(
 
   const contentType = res.headers.get('content-type') || '';
   if (!contentType.includes('application/json')) {
+    if (res.status === 404 && !res.redirected) {
+      throw new ApiRouteUnavailableError();
+    }
+    if (res.status === 200 && !res.redirected && contentType.includes('text/html')) {
+      throw new ApiRouteUnavailableError();
+    }
     if (res.redirected || contentType.includes('text/html')) {
       throw new Error(
         'Sesi pratinjau browser memblokir permintaan latar belakang. Coba buka aplikasi di tab baru.'
@@ -279,6 +308,9 @@ export default function App() {
   const appliedInitialCloudSettingsRef = useRef<boolean>(false);
   const inFlightRefreshRef = useRef<Promise<boolean> | null>(null);
   const lastRefreshAtRef = useRef<number>(0);
+  const syncBackendRef = useRef<'auto' | 'api' | 'firestore'>('auto');
+  const mirroredInitialFirestoreRef = useRef<boolean>(false);
+  const [realtimeFirestoreActive, setRealtimeFirestoreActive] = useState(false);
 
   const [confirmState, setConfirmState] = useState<{
     open: boolean;
@@ -445,29 +477,47 @@ export default function App() {
           .map((id) => histMap.get(id))
           .filter((entry): entry is HistoryEntry => Boolean(entry));
 
-        await apiRequest(
-          '/api/workspace/sync-pending',
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              upsertTransactions,
-              deleteTxIds: Array.from(deletedTxSet),
-              upsertEmployees,
-              deleteEmpIds: Array.from(deletedEmpSet),
-              historyEntries,
-              settings: pending.dirtySettings
-                ? {
-                    officials: currentEnv.state.officials,
-                    customMainTitle: currentEnv.state.customMainTitle,
-                    customActivityTitle: currentEnv.state.customActivityTitle,
-                    currentMonth: currentEnv.state.currentMonth,
-                    currentCategory: currentEnv.state.currentCategory,
-                  }
-                : undefined,
-            }),
-          },
-          activeUser
-        );
+        const pendingPayload = {
+          upsertTransactions,
+          deleteTxIds: Array.from(deletedTxSet),
+          upsertEmployees,
+          deleteEmpIds: Array.from(deletedEmpSet),
+          historyEntries,
+          settings: pending.dirtySettings
+            ? {
+                officials: currentEnv.state.officials,
+                customMainTitle: currentEnv.state.customMainTitle,
+                customActivityTitle: currentEnv.state.customActivityTitle,
+                currentMonth: currentEnv.state.currentMonth,
+                currentCategory: currentEnv.state.currentCategory,
+              }
+            : undefined,
+        };
+
+        if (syncBackendRef.current === 'firestore') {
+          await syncPendingMutationsFirestore(pendingPayload, activeUser.uid);
+        } else {
+          try {
+            await apiRequest(
+              '/api/workspace/sync-pending',
+              {
+                method: 'POST',
+                body: JSON.stringify(pendingPayload),
+              },
+              activeUser
+            );
+            syncBackendRef.current = 'api';
+            void syncPendingMutationsFirestore(pendingPayload, activeUser.uid).catch(() => {});
+          } catch (err) {
+            if (err instanceof ApiRouteUnavailableError) {
+              syncBackendRef.current = 'firestore';
+              setRealtimeFirestoreActive(true);
+              await syncPendingMutationsFirestore(pendingPayload, activeUser.uid);
+            } else {
+              throw err;
+            }
+          }
+        }
 
         const cleared: PendingCloudMutations = { ...EMPTY_PENDING_MUTATIONS };
         setPendingMutations(cleared);
@@ -592,11 +642,33 @@ export default function App() {
             await flushPendingMutations(activeUser);
           }
 
-          const snapshot = await apiRequest<WorkspaceApiResponse>(
-            '/api/workspace',
-            { method: 'GET' },
-            activeUser
-          );
+          let snapshot: WorkspaceApiResponse;
+          if (syncBackendRef.current === 'firestore') {
+            snapshot = await getWorkspaceSnapshotFirestore(activeUser.uid);
+          } else {
+            try {
+              snapshot = await apiRequest<WorkspaceApiResponse>(
+                '/api/workspace',
+                { method: 'GET' },
+                activeUser
+              );
+              syncBackendRef.current = 'api';
+              if (!mirroredInitialFirestoreRef.current) {
+                mirroredInitialFirestoreRef.current = true;
+                void seedFirestoreFromSnapshotIfMissing(snapshot.state, activeUser.uid).catch(
+                  () => {}
+                );
+              }
+            } catch (err) {
+              if (err instanceof ApiRouteUnavailableError) {
+                syncBackendRef.current = 'firestore';
+                setRealtimeFirestoreActive(true);
+                snapshot = await getWorkspaceSnapshotFirestore(activeUser.uid);
+              } else {
+                throw err;
+              }
+            }
+          }
           const { mergedTx, mergedHist } = applyServerSnapshot(snapshot);
           if (showSuccessToast) {
             showToast(
@@ -698,23 +770,65 @@ export default function App() {
     };
   }, [refreshFromCloud]);
 
+  useEffect(() => {
+    if (!realtimeFirestoreActive || !user) return;
+    return subscribeWorkspaceFirestore(() => {
+      if (!hasAnyPendingMutation(envelopeRef.current.pendingMutations)) {
+        void refreshFromCloud(false, user);
+      }
+    });
+  }, [realtimeFirestoreActive, user, refreshFromCloud]);
+
   const syncSettingsToCloud = useCallback(
     async (nextState: AppState, markDirtyOnFail = true, newHistoryEntry?: HistoryEntry) => {
       setSyncState('syncing');
       try {
-        await apiRequest('/api/settings', {
-          method: 'PUT',
-          body: JSON.stringify({
-            settings: {
-              officials: nextState.officials,
-              customMainTitle: nextState.customMainTitle,
-              customActivityTitle: nextState.customActivityTitle,
-              currentMonth: nextState.currentMonth,
-              currentCategory: nextState.currentCategory,
-            },
-            historyEntry: newHistoryEntry,
-          }),
-        });
+        const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+        if (!activeUser) {
+          throw new Error('Sesi sinkronisasi otomatis belum siap.');
+        }
+        const settingsPayload = {
+          officials: nextState.officials,
+          customMainTitle: nextState.customMainTitle,
+          customActivityTitle: nextState.customActivityTitle,
+          currentMonth: nextState.currentMonth,
+          currentCategory: nextState.currentCategory,
+        };
+        if (syncBackendRef.current === 'firestore') {
+          await updateWorkspaceSettingsFirestore(settingsPayload, activeUser.uid, newHistoryEntry);
+        } else {
+          try {
+            await apiRequest(
+              '/api/settings',
+              {
+                method: 'PUT',
+                body: JSON.stringify({
+                  settings: settingsPayload,
+                  historyEntry: newHistoryEntry,
+                }),
+              },
+              activeUser
+            );
+            syncBackendRef.current = 'api';
+            void updateWorkspaceSettingsFirestore(
+              settingsPayload,
+              activeUser.uid,
+              newHistoryEntry
+            ).catch(() => {});
+          } catch (err) {
+            if (err instanceof ApiRouteUnavailableError) {
+              syncBackendRef.current = 'firestore';
+              setRealtimeFirestoreActive(true);
+              await updateWorkspaceSettingsFirestore(
+                settingsPayload,
+                activeUser.uid,
+                newHistoryEntry
+              );
+            } else {
+              throw err;
+            }
+          }
+        }
 
         const nextPending: PendingCloudMutations = {
           ...envelopeRef.current.pendingMutations,
@@ -766,7 +880,7 @@ export default function App() {
         setSyncErrorMsg('Pengaturan belum tersinkron. Klik Sinkronkan Ulang saat terhubung.');
       }
     },
-    [persistEnvelope]
+    [user, persistEnvelope]
   );
 
   const filteredTransactions = useMemo(() => {
@@ -843,10 +957,34 @@ export default function App() {
 
     setSyncState('syncing');
     try {
-      await apiRequest('/api/transactions', {
-        method: 'POST',
-        body: JSON.stringify({ transaction: normalizedTx, historyEntry: newEntry }),
-      });
+      const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+      if (!activeUser) {
+        throw new Error('Sesi sinkronisasi otomatis belum siap.');
+      }
+      if (syncBackendRef.current === 'firestore') {
+        await upsertTransactionFirestore(normalizedTx, activeUser.uid, newEntry);
+      } else {
+        try {
+          await apiRequest(
+            '/api/transactions',
+            {
+              method: 'POST',
+              body: JSON.stringify({ transaction: normalizedTx, historyEntry: newEntry }),
+            },
+            activeUser
+          );
+          syncBackendRef.current = 'api';
+          void upsertTransactionFirestore(normalizedTx, activeUser.uid, newEntry).catch(() => {});
+        } catch (err) {
+          if (err instanceof ApiRouteUnavailableError) {
+            syncBackendRef.current = 'firestore';
+            setRealtimeFirestoreActive(true);
+            await upsertTransactionFirestore(normalizedTx, activeUser.uid, newEntry);
+          } else {
+            throw err;
+          }
+        }
+      }
 
       const cleanedPending: PendingCloudMutations = {
         ...envelopeRef.current.pendingMutations,
@@ -911,10 +1049,34 @@ export default function App() {
 
         setSyncState('syncing');
         try {
-          await apiRequest(`/api/transactions/${encodeURIComponent(safeId)}`, {
-            method: 'DELETE',
-            body: JSON.stringify({ historyEntry: newEntry }),
-          });
+          const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+          if (!activeUser) {
+            throw new Error('Sesi sinkronisasi otomatis belum siap.');
+          }
+          if (syncBackendRef.current === 'firestore') {
+            await deleteTransactionFirestore(safeId, activeUser.uid, newEntry);
+          } else {
+            try {
+              await apiRequest(
+                `/api/transactions/${encodeURIComponent(safeId)}`,
+                {
+                  method: 'DELETE',
+                  body: JSON.stringify({ historyEntry: newEntry }),
+                },
+                activeUser
+              );
+              syncBackendRef.current = 'api';
+              void deleteTransactionFirestore(safeId, activeUser.uid, newEntry).catch(() => {});
+            } catch (err) {
+              if (err instanceof ApiRouteUnavailableError) {
+                syncBackendRef.current = 'firestore';
+                setRealtimeFirestoreActive(true);
+                await deleteTransactionFirestore(safeId, activeUser.uid, newEntry);
+              } else {
+                throw err;
+              }
+            }
+          }
 
           const cleanedPending: PendingCloudMutations = {
             ...envelopeRef.current.pendingMutations,
@@ -995,10 +1157,36 @@ export default function App() {
 
     setSyncState('syncing');
     try {
-      await apiRequest('/api/transactions/batch', {
-        method: 'POST',
-        body: JSON.stringify({ transactions: clonedList, historyEntry: newEntry }),
-      });
+      const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+      if (!activeUser) {
+        throw new Error('Sesi sinkronisasi otomatis belum siap.');
+      }
+      if (syncBackendRef.current === 'firestore') {
+        await batchCreateTransactionsFirestore(clonedList, activeUser.uid, newEntry);
+      } else {
+        try {
+          await apiRequest(
+            '/api/transactions/batch',
+            {
+              method: 'POST',
+              body: JSON.stringify({ transactions: clonedList, historyEntry: newEntry }),
+            },
+            activeUser
+          );
+          syncBackendRef.current = 'api';
+          void batchCreateTransactionsFirestore(clonedList, activeUser.uid, newEntry).catch(
+            () => {}
+          );
+        } catch (err) {
+          if (err instanceof ApiRouteUnavailableError) {
+            syncBackendRef.current = 'firestore';
+            setRealtimeFirestoreActive(true);
+            await batchCreateTransactionsFirestore(clonedList, activeUser.uid, newEntry);
+          } else {
+            throw err;
+          }
+        }
+      }
 
       const newIdSet = new Set(newIds);
       const cleanedPending: PendingCloudMutations = {
@@ -1087,10 +1275,34 @@ export default function App() {
 
     setSyncState('syncing');
     try {
-      await apiRequest('/api/employees', {
-        method: 'POST',
-        body: JSON.stringify({ employee: normalizedEmp, historyEntry: newEntry }),
-      });
+      const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+      if (!activeUser) {
+        throw new Error('Sesi sinkronisasi otomatis belum siap.');
+      }
+      if (syncBackendRef.current === 'firestore') {
+        await upsertEmployeeFirestore(normalizedEmp, activeUser.uid, newEntry);
+      } else {
+        try {
+          await apiRequest(
+            '/api/employees',
+            {
+              method: 'POST',
+              body: JSON.stringify({ employee: normalizedEmp, historyEntry: newEntry }),
+            },
+            activeUser
+          );
+          syncBackendRef.current = 'api';
+          void upsertEmployeeFirestore(normalizedEmp, activeUser.uid, newEntry).catch(() => {});
+        } catch (err) {
+          if (err instanceof ApiRouteUnavailableError) {
+            syncBackendRef.current = 'firestore';
+            setRealtimeFirestoreActive(true);
+            await upsertEmployeeFirestore(normalizedEmp, activeUser.uid, newEntry);
+          } else {
+            throw err;
+          }
+        }
+      }
 
       const cleanedPending: PendingCloudMutations = {
         ...envelopeRef.current.pendingMutations,
@@ -1151,10 +1363,34 @@ export default function App() {
 
         setSyncState('syncing');
         try {
-          await apiRequest(`/api/employees/${encodeURIComponent(safeId)}`, {
-            method: 'DELETE',
-            body: JSON.stringify({ historyEntry: newEntry }),
-          });
+          const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+          if (!activeUser) {
+            throw new Error('Sesi sinkronisasi otomatis belum siap.');
+          }
+          if (syncBackendRef.current === 'firestore') {
+            await deleteEmployeeFirestore(safeId, activeUser.uid, newEntry);
+          } else {
+            try {
+              await apiRequest(
+                `/api/employees/${encodeURIComponent(safeId)}`,
+                {
+                  method: 'DELETE',
+                  body: JSON.stringify({ historyEntry: newEntry }),
+                },
+                activeUser
+              );
+              syncBackendRef.current = 'api';
+              void deleteEmployeeFirestore(safeId, activeUser.uid, newEntry).catch(() => {});
+            } catch (err) {
+              if (err instanceof ApiRouteUnavailableError) {
+                syncBackendRef.current = 'firestore';
+                setRealtimeFirestoreActive(true);
+                await deleteEmployeeFirestore(safeId, activeUser.uid, newEntry);
+              } else {
+                throw err;
+              }
+            }
+          }
 
           const cleanedPending: PendingCloudMutations = {
             ...envelopeRef.current.pendingMutations,
@@ -1243,10 +1479,34 @@ export default function App() {
 
       setSyncState('syncing');
       try {
-        await apiRequest('/api/workspace/import', {
-          method: 'POST',
-          body: JSON.stringify({ state: nextState, historyEntry: newEntry }),
-        });
+        const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+        if (!activeUser) {
+          throw new Error('Sesi sinkronisasi otomatis belum siap.');
+        }
+        if (syncBackendRef.current === 'firestore') {
+          await replaceWorkspaceDataFirestore(nextState, activeUser.uid, newEntry);
+        } else {
+          try {
+            await apiRequest(
+              '/api/workspace/import',
+              {
+                method: 'POST',
+                body: JSON.stringify({ state: nextState, historyEntry: newEntry }),
+              },
+              activeUser
+            );
+            syncBackendRef.current = 'api';
+            void replaceWorkspaceDataFirestore(nextState, activeUser.uid, newEntry).catch(() => {});
+          } catch (err) {
+            if (err instanceof ApiRouteUnavailableError) {
+              syncBackendRef.current = 'firestore';
+              setRealtimeFirestoreActive(true);
+              await replaceWorkspaceDataFirestore(nextState, activeUser.uid, newEntry);
+            } else {
+              throw err;
+            }
+          }
+        }
 
         const cleared = { ...EMPTY_PENDING_MUTATIONS };
         setPendingMutations(cleared);
@@ -1297,10 +1557,34 @@ export default function App() {
 
         setSyncState('syncing');
         try {
-          await apiRequest('/api/workspace/reset', {
-            method: 'POST',
-            body: JSON.stringify({ state: fresh, historyEntry: newEntry }),
-          });
+          const activeUser = user || auth.currentUser || (await ensureAnonymousSession());
+          if (!activeUser) {
+            throw new Error('Sesi sinkronisasi otomatis belum siap.');
+          }
+          if (syncBackendRef.current === 'firestore') {
+            await replaceWorkspaceDataFirestore(fresh, activeUser.uid, newEntry);
+          } else {
+            try {
+              await apiRequest(
+                '/api/workspace/reset',
+                {
+                  method: 'POST',
+                  body: JSON.stringify({ state: fresh, historyEntry: newEntry }),
+                },
+                activeUser
+              );
+              syncBackendRef.current = 'api';
+              void replaceWorkspaceDataFirestore(fresh, activeUser.uid, newEntry).catch(() => {});
+            } catch (err) {
+              if (err instanceof ApiRouteUnavailableError) {
+                syncBackendRef.current = 'firestore';
+                setRealtimeFirestoreActive(true);
+                await replaceWorkspaceDataFirestore(fresh, activeUser.uid, newEntry);
+              } else {
+                throw err;
+              }
+            }
+          }
 
           const cleared = { ...EMPTY_PENDING_MUTATIONS };
           setPendingMutations(cleared);

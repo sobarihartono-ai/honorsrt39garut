@@ -19,6 +19,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidWorkspaceId(wsId) {
+      return isValidId(wsId) && wsId == 'srt39-garut-2026';
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -33,6 +37,10 @@ service cloud.firestore {
 
     function parentUserExists(userId) {
       return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function parentWorkspaceExists(wsId) {
+      return exists(/databases/$(database)/documents/workspaces/$(wsId));
     }
 
     function isValidCategory(cat) {
@@ -137,6 +145,198 @@ service cloud.firestore {
         && data.detail is string && data.detail.size() <= 300
         && data.timestamp is number && data.timestamp >= 0
         && data.createdAt is timestamp;
+    }
+
+    function isValidWorkspace(data, wsId) {
+      return data.keys().hasAll([
+          'workspaceId', 'ppkName', 'ppkNip', 'bendName', 'bendNip',
+          'kepsekName', 'kepsekNip', 'customMainTitle', 'customActivityTitle',
+          'currentMonth', 'currentCategory', 'seeded',
+          'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'ppkName', 'ppkNip', 'bendName', 'bendNip',
+          'kepsekName', 'kepsekNip', 'customMainTitle', 'customActivityTitle',
+          'currentMonth', 'currentCategory', 'seeded',
+          'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId is string && data.workspaceId == wsId
+        && data.ppkName is string && data.ppkName.size() <= 120
+        && data.ppkNip is string && data.ppkNip.size() <= 60
+        && data.bendName is string && data.bendName.size() <= 120
+        && data.bendNip is string && data.bendNip.size() <= 60
+        && data.kepsekName is string && data.kepsekName.size() <= 120
+        && data.kepsekNip is string && data.kepsekNip.size() <= 60
+        && data.customMainTitle is string && data.customMainTitle.size() <= 200
+        && data.customActivityTitle is string && data.customActivityTitle.size() <= 250
+        && data.currentMonth is string && data.currentMonth.size() >= 1 && data.currentMonth.size() <= 30
+        && isValidCategory(data.currentCategory)
+        && data.seeded is bool
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 && data.updatedByUid == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceTransaction(data, wsId) {
+      return data.keys().hasAll([
+          'workspaceId', 'category', 'bulan', 'noBukti', 'tanggal',
+          'nama', 'jenjang', 'jenis', 'status', 'jabatan',
+          'tarif', 'jamlat', 'pajakRate', 'customRangka',
+          'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'category', 'bulan', 'noBukti', 'tanggal',
+          'nama', 'jenjang', 'jenis', 'status', 'jabatan',
+          'tarif', 'jamlat', 'pajakRate', 'customRangka',
+          'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId is string && data.workspaceId == wsId
+        && isValidCategory(data.category)
+        && data.bulan is string && data.bulan.size() >= 1 && data.bulan.size() <= 30
+        && data.noBukti is string && data.noBukti.size() >= 1 && data.noBukti.size() <= 80
+        && data.tanggal is string && data.tanggal.size() >= 1 && data.tanggal.size() <= 60
+        && data.nama is string && data.nama.size() >= 1 && data.nama.size() <= 120
+        && data.jenjang is string && data.jenjang.size() >= 1 && data.jenjang.size() <= 40
+        && data.jenis is string && data.jenis.size() >= 1 && data.jenis.size() <= 100
+        && data.status is string && data.status.size() >= 1 && data.status.size() <= 60
+        && data.jabatan is string && data.jabatan.size() >= 1 && data.jabatan.size() <= 100
+        && data.tarif is number && data.tarif >= 0 && data.tarif <= 100000000
+        && data.jamlat is number && data.jamlat >= 1 && data.jamlat <= 1000
+        && data.pajakRate is number && data.pajakRate >= 0 && data.pajakRate <= 1
+        && data.customRangka is string && data.customRangka.size() <= 250
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 && data.updatedByUid == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceEmployee(data, wsId) {
+      return data.keys().hasAll([
+          'workspaceId', 'category', 'nama', 'jenis', 'jenjang',
+          'status', 'jabatan', 'tarif', 'pajakRate',
+          'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'category', 'nama', 'jenis', 'jenjang',
+          'status', 'jabatan', 'tarif', 'pajakRate',
+          'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'
+        ])
+        && data.workspaceId is string && data.workspaceId == wsId
+        && isValidCategory(data.category)
+        && data.nama is string && data.nama.size() >= 1 && data.nama.size() <= 120
+        && data.jenis is string && data.jenis.size() >= 1 && data.jenis.size() <= 100
+        && data.jenjang is string && data.jenjang.size() >= 1 && data.jenjang.size() <= 40
+        && data.status is string && data.status.size() >= 1 && data.status.size() <= 60
+        && data.jabatan is string && data.jabatan.size() >= 1 && data.jabatan.size() <= 100
+        && data.tarif is number && data.tarif >= 0 && data.tarif <= 100000000
+        && data.pajakRate is number && data.pajakRate >= 0 && data.pajakRate <= 1
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128 && data.updatedByUid == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceHistoryEntry(data, wsId) {
+      return data.keys().hasAll([
+          'workspaceId', 'action', 'detail', 'timestamp', 'createdByUid', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'workspaceId', 'action', 'detail', 'timestamp', 'createdByUid', 'createdAt'
+        ])
+        && data.workspaceId is string && data.workspaceId == wsId
+        && data.action is string && data.action.size() >= 1 && data.action.size() <= 80
+        && data.detail is string && data.detail.size() <= 300
+        && data.timestamp is number && data.timestamp >= 0
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 && data.createdByUid == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    match /workspaces/{workspaceId} {
+      allow get: if isValidWorkspaceId(workspaceId) && isSignedIn();
+      allow list: if false;
+      allow create: if isValidWorkspaceId(workspaceId)
+        && isSignedIn()
+        && isValidWorkspace(incoming(), workspaceId)
+        && incoming().createdByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidWorkspaceId(workspaceId)
+        && isSignedIn()
+        && isValidWorkspace(incoming(), workspaceId)
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'ppkName', 'ppkNip', 'bendName', 'bendNip',
+          'kepsekName', 'kepsekNip', 'customMainTitle', 'customActivityTitle',
+          'currentMonth', 'currentCategory', 'seeded', 'updatedByUid', 'updatedAt'
+        ]);
+      allow delete: if false;
+
+      match /transactions/{txId} {
+        allow get: if isValidWorkspaceId(workspaceId) && isValidId(txId) && isSignedIn();
+        allow list: if isSignedIn() && existing().workspaceId == 'srt39-garut-2026';
+        allow create: if isValidWorkspaceId(workspaceId) && isValidId(txId)
+          && isSignedIn()
+          && isValidWorkspaceTransaction(incoming(), workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && parentWorkspaceExists(workspaceId);
+        allow update: if isValidWorkspaceId(workspaceId) && isValidId(txId)
+          && isSignedIn()
+          && isValidWorkspaceTransaction(incoming(), workspaceId)
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && parentWorkspaceExists(workspaceId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'category', 'bulan', 'noBukti', 'tanggal', 'nama',
+            'jenjang', 'jenis', 'status', 'jabatan', 'tarif',
+            'jamlat', 'pajakRate', 'customRangka', 'updatedByUid', 'updatedAt'
+          ]);
+        allow delete: if isValidWorkspaceId(workspaceId) && isValidId(txId) && isSignedIn();
+      }
+
+      match /employees/{empId} {
+        allow get: if isValidWorkspaceId(workspaceId) && isValidId(empId) && isSignedIn();
+        allow list: if isSignedIn() && existing().workspaceId == 'srt39-garut-2026';
+        allow create: if isValidWorkspaceId(workspaceId) && isValidId(empId)
+          && isSignedIn()
+          && isValidWorkspaceEmployee(incoming(), workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && parentWorkspaceExists(workspaceId);
+        allow update: if isValidWorkspaceId(workspaceId) && isValidId(empId)
+          && isSignedIn()
+          && isValidWorkspaceEmployee(incoming(), workspaceId)
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && parentWorkspaceExists(workspaceId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'category', 'nama', 'jenis', 'jenjang', 'status',
+            'jabatan', 'tarif', 'pajakRate', 'updatedByUid', 'updatedAt'
+          ]);
+        allow delete: if isValidWorkspaceId(workspaceId) && isValidId(empId) && isSignedIn();
+      }
+
+      match /history/{histId} {
+        allow get: if isValidWorkspaceId(workspaceId) && isValidId(histId) && isSignedIn();
+        allow list: if isSignedIn() && existing().workspaceId == 'srt39-garut-2026';
+        allow create: if isValidWorkspaceId(workspaceId) && isValidId(histId)
+          && isSignedIn()
+          && isValidWorkspaceHistoryEntry(incoming(), workspaceId)
+          && incoming().createdAt == request.time
+          && parentWorkspaceExists(workspaceId);
+        allow update: if false;
+        allow delete: if isValidWorkspaceId(workspaceId) && isValidId(histId) && isSignedIn();
+      }
     }
 
     match /users/{userId} {

@@ -24,6 +24,10 @@ const port = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '5mb' }));
 
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
 app.get('/api/workspace', requireAuth, async (_req: AuthRequest, res) => {
   try {
     const snapshot = await getWorkspaceSnapshot(DEFAULT_WORKSPACE_ID);
@@ -201,6 +205,10 @@ app.post('/api/workspace/sync-pending', requireAuth, async (req: AuthRequest, re
     console.error('POST /api/workspace/sync-pending failed:', error);
     res.status(500).json({ error: 'Gagal menyinkronkan perubahan tertunda.' });
   }
+});
+
+app.use('/api/*', (_req, res) => {
+  res.status(404).json({ error: 'Endpoint API tidak ditemukan.' });
 });
 
 if (process.env.NODE_ENV !== 'production') {

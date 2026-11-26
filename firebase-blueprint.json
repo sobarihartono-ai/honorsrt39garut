@@ -245,9 +245,124 @@
         }
       },
       "required": ["ownerId", "action", "detail", "timestamp", "createdAt"]
+    },
+    "WorkspaceSettings": {
+      "title": "WorkspaceSettings",
+      "description": "Pengaturan pejabat penandatangan, judul dokumen, dan status seed ruang kerja bersama SRT 39 Garut",
+      "type": "object",
+      "properties": {
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ppkName": { "type": "string", "maxLength": 120 },
+        "ppkNip": { "type": "string", "maxLength": 60 },
+        "bendName": { "type": "string", "maxLength": 120 },
+        "bendNip": { "type": "string", "maxLength": 60 },
+        "kepsekName": { "type": "string", "maxLength": 120 },
+        "kepsekNip": { "type": "string", "maxLength": 60 },
+        "customMainTitle": { "type": "string", "maxLength": 200 },
+        "customActivityTitle": { "type": "string", "maxLength": 250 },
+        "currentMonth": { "type": "string", "maxLength": 30 },
+        "currentCategory": { "type": "string", "enum": ["ekskul", "gurutamu", "lainnya"], "maxLength": 20 },
+        "seeded": { "type": "boolean" },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "workspaceId", "ppkName", "ppkNip", "bendName", "bendNip",
+        "kepsekName", "kepsekNip", "customMainTitle", "customActivityTitle",
+        "currentMonth", "currentCategory", "seeded",
+        "createdByUid", "updatedByUid", "createdAt", "updatedAt"
+      ]
+    },
+    "WorkspaceTransaction": {
+      "title": "WorkspaceTransaction",
+      "description": "Entri transaksi daftar hadir, honorarium, atau transpor ruang kerja bersama",
+      "type": "object",
+      "properties": {
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "category": { "type": "string", "enum": ["ekskul", "gurutamu", "lainnya"], "maxLength": 20 },
+        "bulan": { "type": "string", "maxLength": 30 },
+        "noBukti": { "type": "string", "maxLength": 80 },
+        "tanggal": { "type": "string", "maxLength": 60 },
+        "nama": { "type": "string", "maxLength": 120 },
+        "jenjang": { "type": "string", "maxLength": 40 },
+        "jenis": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "maxLength": 60 },
+        "jabatan": { "type": "string", "maxLength": 100 },
+        "tarif": { "type": "number" },
+        "jamlat": { "type": "number" },
+        "pajakRate": { "type": "number" },
+        "customRangka": { "type": "string", "maxLength": 250 },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "workspaceId", "category", "bulan", "noBukti", "tanggal",
+        "nama", "jenjang", "jenis", "status", "jabatan",
+        "tarif", "jamlat", "pajakRate", "customRangka",
+        "createdByUid", "updatedByUid", "createdAt", "updatedAt"
+      ]
+    },
+    "WorkspaceEmployee": {
+      "title": "WorkspaceEmployee",
+      "description": "Master data pegawai atau pembina ruang kerja bersama",
+      "type": "object",
+      "properties": {
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "category": { "type": "string", "enum": ["ekskul", "gurutamu", "lainnya"], "maxLength": 20 },
+        "nama": { "type": "string", "maxLength": 120 },
+        "jenis": { "type": "string", "maxLength": 100 },
+        "jenjang": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "maxLength": 60 },
+        "jabatan": { "type": "string", "maxLength": 100 },
+        "tarif": { "type": "number" },
+        "pajakRate": { "type": "number" },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "updatedByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "workspaceId", "category", "nama", "jenis", "jenjang",
+        "status", "jabatan", "tarif", "pajakRate",
+        "createdByUid", "updatedByUid", "createdAt", "updatedAt"
+      ]
+    },
+    "WorkspaceHistoryEntry": {
+      "title": "WorkspaceHistoryEntry",
+      "description": "Riwayat aktivitas ruang kerja bersama",
+      "type": "object",
+      "properties": {
+        "workspaceId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "action": { "type": "string", "maxLength": 80 },
+        "detail": { "type": "string", "maxLength": 300 },
+        "timestamp": { "type": "number" },
+        "createdByUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["workspaceId", "action", "detail", "timestamp", "createdByUid", "createdAt"]
     }
   },
   "firestore": {
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/WorkspaceSettings" },
+      "description": "Dokumen ruang kerja bersama SRT 39 Garut"
+    },
+    "/workspaces/{workspaceId}/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/WorkspaceTransaction" },
+      "description": "Transaksi SPJ ruang kerja bersama"
+    },
+    "/workspaces/{workspaceId}/employees/{empId}": {
+      "schema": { "$ref": "#/entities/WorkspaceEmployee" },
+      "description": "Master pegawai ruang kerja bersama"
+    },
+    "/workspaces/{workspaceId}/history/{histId}": {
+      "schema": { "$ref": "#/entities/WorkspaceHistoryEntry" },
+      "description": "Riwayat aktivitas ruang kerja bersama"
+    },
     "/users/{userId}": {
       "schema": { "$ref": "#/entities/UserProfile" },
       "description": "Profil pemilik akun"
