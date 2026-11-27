@@ -349,13 +349,14 @@ export function buildVectorPDF(job: PrintJobMeta, ctx: DocContext): jsPDF {
 
       const col2X = marginX + 104;
       doc.text('Lunas Dibayar', col2X, finalY + 5);
-      doc.text(`Tanggal                 ${tx.tanggal}`, col2X, finalY + 10);
+      doc.text('Tanggal', col2X, finalY + 10);
+      doc.text(tx.tanggal, col2X + 21, finalY + 10);
       doc.text('Bendahara Pengeluaran Pembantu', col2X, finalY + 15);
       doc.text('Wilayah 10', col2X, finalY + 20);
-      doc.text(ctx.officials.bendName, col2X + 26, finalY + 34, { align: 'center' });
+      doc.text(ctx.officials.bendName, col2X, finalY + 34);
       const bendW = doc.getTextWidth(ctx.officials.bendName);
-      doc.line(col2X + 26 - bendW / 2, finalY + 34.7, col2X + 26 + bendW / 2, finalY + 34.7);
-      doc.text(ctx.officials.bendNip, col2X + 26, finalY + 39.5, { align: 'center' });
+      doc.line(col2X, finalY + 34.7, col2X + bendW, finalY + 34.7);
+      doc.text(ctx.officials.bendNip, col2X, finalY + 39.5);
 
       const col3X = pageW - marginX - 34;
       doc.text('Yang Membayarkan', col3X, finalY + 15, { align: 'center' });
@@ -607,16 +608,18 @@ function renderTandaTerimaHTMLString(tx: Transaction, ctx: DocContext): string {
           <div style="text-decoration:underline;">${escapeHtml(ctx.officials.ppkName)}</div>
           <div>${escapeHtml(ctx.officials.ppkNip)}</div>
         </div>
-        <div>
-          <div>&nbsp;</div>
-          <div>Lunas Dibayar</div>
-          <div>Tanggal &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${escapeHtml(tx.tanggal)}</div>
-          <div>Bendahara Pengeluaran Pembantu</div>
-          <div>Wilayah 10</div>
-          <div style="height:36px;"></div>
-          <div style="text-align:center;">
-            <div style="text-decoration:underline;">${escapeHtml(ctx.officials.bendName)}</div>
-            <div>${escapeHtml(ctx.officials.bendNip)}</div>
+        <div style="display:flex; justify-content:center;">
+          <div style="width:fit-content; text-align:left;">
+            <div>&nbsp;</div>
+            <div>Lunas Dibayar</div>
+            <div style="display:flex;"><span style="display:inline-block; width:74px;">Tanggal</span><span>${escapeHtml(tx.tanggal)}</span></div>
+            <div>Bendahara Pengeluaran Pembantu</div>
+            <div>Wilayah 10</div>
+            <div style="height:36px;"></div>
+            <div style="text-align:left;">
+              <div style="text-decoration:underline;">${escapeHtml(ctx.officials.bendName)}</div>
+              <div>${escapeHtml(ctx.officials.bendNip)}</div>
+            </div>
           </div>
         </div>
         <div style="text-align:center;">

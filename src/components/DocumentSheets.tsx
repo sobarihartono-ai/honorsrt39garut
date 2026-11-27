@@ -294,16 +294,21 @@ export const TandaTerimaSheet: React.FC<{ tx: Transaction } & SheetContextProps>
           <div className="underline">{officials.ppkName}</div>
           <div>{officials.ppkNip}</div>
         </div>
-        <div>
-          <div>&nbsp;</div>
-          <div>Lunas Dibayar</div>
-          <div>Tanggal &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {tx.tanggal}</div>
-          <div>Bendahara Pengeluaran Pembantu</div>
-          <div>Wilayah 10</div>
-          <div className="h-[36px]" />
-          <div className="text-center">
-            <div className="underline">{officials.bendName}</div>
-            <div>{officials.bendNip}</div>
+        <div className="flex justify-center">
+          <div className="w-fit text-left">
+            <div>&nbsp;</div>
+            <div>Lunas Dibayar</div>
+            <div className="flex">
+              <span className="inline-block w-[74px]">Tanggal</span>
+              <span>{tx.tanggal}</span>
+            </div>
+            <div>Bendahara Pengeluaran Pembantu</div>
+            <div>Wilayah 10</div>
+            <div className="h-[36px]" />
+            <div className="text-left">
+              <div className="underline">{officials.bendName}</div>
+              <div>{officials.bendNip}</div>
+            </div>
           </div>
         </div>
         <div className="text-center">
